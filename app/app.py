@@ -2,10 +2,12 @@
 
   pythonw app.py [--cwd <project dir>]
 
-- Claude：客户端托管 Claude Code（stream-json），续上房间里最近的 Claude 会话。它在忙时，发给它的话插进当前这一轮
-  （Claude Code 在下一次工具调用之间接收）。
-- GPT：客户端起一个 Codex app-server（同一个 codex.exe、同一套配置和 hook），在从房间原 GPT 窗口分叉出的线程上
-  回答；它在忙时，发给它的话用 turn/steer 插进当前这一轮。
+- 每个群聊（房间）有自己的 Claude 会话和 GPT 线程。切到别的群聊时，正在回答的一方在后台继续；
+  切回来时接着显示它正在写的内容。
+- Claude：每个群聊一个 Claude Code 进程（stream-json），续上该群聊最近的 Claude 会话。它在忙时，
+  发给它的话插进当前这一轮（Claude Code 在下一次工具调用之间接收）。
+- GPT：一个 Codex app-server（同一个 codex.exe、同一套配置和 hook）同时承载各个群聊的线程；
+  它在忙时，发给它的话用 turn/steer 插进当前这一轮。
 - 路由（一次只叫醒一个）：写了 @gpt/@claude 或手动选了对象就按指定的；否则都空闲给 Claude，Claude 忙给 GPT，
   GPT 忙给 Claude，都忙插给 GPT。
 - 共享通道照旧：用户的话由客户端记进通道，两边的最终回复由各自的 Stop hook 记进通道，另一方在下次开口前看到。
@@ -23,14 +25,15 @@ from work_record import WorkRecord
 DEFAULT_CWD = os.environ.get("GROUPCHAT_CWD") or os.getcwd()  # only used when there is no conversation yet
 PREFS = os.path.join(BRIDGE, "app-prefs.json")
 GUIDE = os.path.join(HERE, "GROUPCHAT.md")  # the client's own instructions, given to both models only here
-
-
-def guide_text():
-    return open(GUIDE, encoding="utf-8").read()
 NO_WINDOW = 0x08000000
 CLAUDE_MODELS = [("claude-opus-5-5", "Opus 5.5"), ("claude-fable-5-1", "Fable 5.1"), ("claude-opus-5", "Opus 5"),
                  ("claude-sonnet-5", "Sonnet 5"), ("claude-haiku-4-5", "Haiku 4.5")]
 CLAUDE_EFFORTS = ["low", "medium", "high", "xhigh", "max"]
+CLAUDE_ACCESS = {"bypassPermissions": "跳过所有确认", "auto": "自动判断", "default": "每次询问", "acceptEdits": "自动接受编辑"}
+
+
+def guide_text():
+    return open(GUIDE, encoding="utf-8").read()
 
 
 def log(where, ex):
@@ -73,17 +76,17 @@ def when(ts):
         return ""
 
 
-# ---------------------------------------------------------------- Claude (Claude Code, stream-json)
+def rid_of(room):
+    return os.path.basename(room["dir"])
+
+
+# ---------------------------------------------------------------- Claude: one Claude Code process per conversation
 class ClaudeHost:
-    def __init__(self, app, prefs):
-        self.app, self.p = app, None
-        self.model = prefs.get("claude_model", "claude-opus-5-5")
-        self.effort = prefs.get("claude_effort", "medium")
-        self.perm = prefs.get("claude_permission", "bypassPermissions")
+    def __init__(self, app, room):
+        self.app, self.room, self.rid, self.p = app, room, rid_of(room), None
+        self.model = self.effort = None   # what the running process was started with
         self.busy = False
-        self.queue = []            # [(text, seq)] waiting for the current turn to end
         self.error = None
-        self.quota = None
         self.pending = {}
         self.wlock = threading.Lock()
         self.text_blocks = 0
@@ -98,16 +101,18 @@ class ClaudeHost:
         if not exe:
             self.error = "找不到 claude.exe"
             return False
-        room = self.app.room
+        cfg = self.app.claude_cfg
+        self.model, self.effort = cfg["model"], cfg["effort"]
+        room = self.room
         sid = C.load_json(os.path.join(room["dir"], "claude-latest.json"), {}).get("session")
         cmd = [exe, "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
-               "--include-partial-messages", "--model", self.model, "--effort", self.effort, "--permission-mode", self.perm,
+               "--include-partial-messages", "--model", self.model, "--effort", self.effort, "--permission-mode", cfg["perm"],
                "--append-system-prompt-file", GUIDE]
         if sid:
             cmd += ["--resume", sid]
         else:  # a new conversation: a new Claude session named after it
             cmd += ["--name", room["name"]]
-        env = dict(os.environ, GROUPCHAT_HOSTED="1", GROUPCHAT_ROOM=os.path.basename(room["dir"]))  # hooks: plain format
+        env = dict(os.environ, GROUPCHAT_HOSTED="1", GROUPCHAT_ROOM=self.rid)  # hooks: plain format, this room
         env.pop("GROUPCHAT_CHANNEL", None)
         self.p = subprocess.Popen(cmd, cwd=room["root"], env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                   stderr=subprocess.PIPE, creationflags=NO_WINDOW)
@@ -148,48 +153,22 @@ class ClaudeHost:
         while self.ready:
             r = self.control({"subtype": "get_usage"})
             if r and r.get("subtype") == "success":
-                self.take_usage(r.get("response") or {})
+                self.app.take_claude_usage(r.get("response") or {})
             time.sleep(180)
 
-    def take_usage(self, obj):
-        """get_usage reply: rate_limits.seven_day = {utilization: percent, resets_at: ISO time}."""
-        w = (obj.get("rate_limits") or {}).get("seven_day") or {}
-        if w.get("utilization") is not None:
-            self.quota = {"remaining": pct_left(w["utilization"], 100), "resets": when(w.get("resets_at"))}
-
-    def probe_usage(self):
-        """Read the weekly quota before any session is started: a throwaway CLI answering one control request (no model call)."""
-        exe = claude_exe()
-        if not exe:
-            return
-        try:
-            p = subprocess.Popen([exe, "--input-format", "stream-json", "--output-format", "stream-json", "--verbose"],
-                                 cwd=os.path.expanduser("~"), stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                                 env=dict(os.environ, GROUPCHAT_OFF="1"), creationflags=NO_WINDOW)
-            p.stdin.write(b'{"type":"control_request","request_id":"usage","request":{"subtype":"get_usage"}}\n')
-            p.stdin.flush()
-            end = time.time() + 30
-            for raw in p.stdout:
-                ev = json.loads(raw)
-                if ev.get("type") == "control_response":
-                    self.take_usage((ev.get("response") or {}).get("response") or {})
-                    break
-                if time.time() > end:
-                    break
-            p.kill()
-        except Exception as ex:
-            log("claude usage", ex)
-
     def send(self, text, seqs):
+        cfg = self.app.claude_cfg
+        if self.ready and (self.model, self.effort) != (cfg["model"], cfg["effort"]):
+            self.stop()  # model / effort changed since this process started: same session, new settings
         if not self.ready and not self.start():
             return False
-        C.mark_sent(self.app.room, "claude", text, seqs)
+        C.mark_sent(self.room, "claude", text, seqs)
         self.write({"type": "user", "message": {"role": "user", "content": text}, "parent_tool_use_id": None})
         self.busy, self.text_blocks = True, 0
         return True
 
     def stop_turn(self):
-        """Interrupt the current turn (what Esc does in Claude Code). Messages queued for Claude still follow."""
+        """Interrupt the current turn (what Esc does in Claude Code)."""
         if self.busy and self.ready:
             self.stopping = True
             threading.Thread(target=self.control, args=({"subtype": "interrupt"},), daemon=True).start()
@@ -199,16 +178,8 @@ class ClaudeHost:
     def steer(self, text, seq):
         """Mid-turn message: Claude Code takes it in at the next tool-call boundary of the current turn
         (a turn that is only writing text sees it when that text is done)."""
-        C.mark_sent(self.app.room, "claude", text, [seq])
+        C.mark_sent(self.room, "claude", text, [seq])
         self.write({"type": "user", "message": {"role": "user", "content": text}, "parent_tool_use_id": None})
-
-    def enqueue(self, text, seq):
-        self.queue.append((text, seq))
-
-    def flush_queue(self):
-        if self.queue and not self.busy:
-            items, self.queue = self.queue, []
-            self.send("\n\n".join(t for t, _ in items), [s for _, s in items])
 
     def read_err(self, p):
         tail = []
@@ -218,7 +189,7 @@ class ClaudeHost:
             self.error = " / ".join(x for x in tail if x)[:200] or f"Claude 进程退出（{p.returncode}）"
 
     def read(self, p):
-        app = self.app
+        app, rid = self.app, self.rid
         work = None
         for raw in p.stdout:
             try:
@@ -229,7 +200,7 @@ class ClaudeHost:
             try:
                 if t in ("assistant", "user") and isinstance(ev.get("message"), dict):
                     if work is None:
-                        work = WorkRecord(app.room, "claude", ev.get("session_id"))
+                        work = WorkRecord(self.room, "claude", ev.get("session_id"))
                     record_event(work, "claude", ev)
                 if t == "stream_event":
                     e = ev.get("event") or {}
@@ -237,27 +208,26 @@ class ClaudeHost:
                     if et == "content_block_start":
                         cb = e.get("content_block") or {}
                         if cb.get("type") == "tool_use":
-                            app.activity("claude", f"正在使用工具：{cb.get('name')}")
+                            app.activity(rid, "claude", f"正在使用工具：{cb.get('name')}")
                         elif cb.get("type") == "text":
                             if self.text_blocks:
-                                app.delta("claude", "\n\n")
+                                app.delta(rid, "claude", "\n\n")
                             self.text_blocks += 1
-                            app.activity("claude", "")
+                            app.activity(rid, "claude", "")
                     elif et == "content_block_delta" and (e.get("delta") or {}).get("type") == "text_delta":
-                        app.delta("claude", e["delta"].get("text", ""))
+                        app.delta(rid, "claude", e["delta"].get("text", ""))
                 elif t == "result":
                     if work is not None:
                         work.session = ev.get("session_id") or work.session
                         record_event(work, "finish", "interrupted" if self.stopping else "error" if ev.get("is_error") else "completed")
                         work = None
                     self.busy = False
-                    app.live_end("claude", stopped=self.stopping)
+                    app.live_end(rid, "claude", stopped=self.stopping)
                     self.stopping = False
-                    self.flush_queue()
                 elif t == "rate_limit_event":
                     week = ((ev.get("rate_limit_info") or {}).get("unifiedWindows") or {}).get("seven_day") or {}
                     if week.get("utilization") is not None:  # a fraction here
-                        self.quota = {"remaining": pct_left(week["utilization"], 1), "resets": when(week.get("resetsAt"))}
+                        app.claude_quota = {"remaining": pct_left(week["utilization"], 1), "resets": when(week.get("resetsAt"))}
                 elif t == "control_response":
                     r = ev.get("response") or {}
                     q = self.pending.get(r.get("request_id"))
@@ -274,52 +244,56 @@ class ClaudeHost:
             except Exception as ex:
                 log("claude work record", ex)
         self.busy = False
-        app.live_end("claude")
-
-    def options(self):
-        return {"models": [{"id": m, "label": l} for m, l in CLAUDE_MODELS], "model": self.model,
-                "efforts": [{"id": e, "label": e} for e in CLAUDE_EFFORTS], "effort": self.effort}
-
-    def apply(self, model, effort):
-        """Model/effort take effect by restarting the session (same session id) once Claude is idle."""
-        changed = (model, effort) != (self.model, self.effort)
-        self.model, self.effort = model, effort
-        if changed and self.ready:
-            def later():
-                while self.busy:
-                    time.sleep(0.5)
-                self.stop()
-                self.start()
-            threading.Thread(target=later, daemon=True).start()
+        app.live_end(rid, "claude")
 
     def status(self):
-        return {"ready": self.ready or (self.p is None and not self.error), "busy": self.busy, "queued": len(self.queue),
-                "quota": self.quota, "error": self.error,
-                "access": {"bypassPermissions": "跳过所有确认", "auto": "自动判断", "default": "每次询问",
-                           "acceptEdits": "自动接受编辑"}.get(self.perm, self.perm)}
+        return {"ready": self.ready or (self.p is None and not self.error), "busy": self.busy, "queued": 0,
+                "quota": self.app.claude_quota, "error": self.error,
+                "access": CLAUDE_ACCESS.get(self.app.claude_cfg["perm"], self.app.claude_cfg["perm"])}
 
 
-# ---------------------------------------------------------------- GPT (Codex app-server)
-class GPTHost:
+def probe_claude_usage(app):
+    """Read the weekly quota before any session is started: a throwaway CLI answering one control request (no model call)."""
+    exe = claude_exe()
+    if not exe:
+        return
+    try:
+        p = subprocess.Popen([exe, "--input-format", "stream-json", "--output-format", "stream-json", "--verbose"],
+                             cwd=os.path.expanduser("~"), stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                             env=dict(os.environ, GROUPCHAT_OFF="1"), creationflags=NO_WINDOW)
+        p.stdin.write(b'{"type":"control_request","request_id":"usage","request":{"subtype":"get_usage"}}\n')
+        p.stdin.flush()
+        end = time.time() + 30
+        for raw in p.stdout:
+            ev = json.loads(raw)
+            if ev.get("type") == "control_response":
+                app.take_claude_usage((ev.get("response") or {}).get("response") or {})
+                break
+            if time.time() > end:
+                break
+        p.kill()
+    except Exception as ex:
+        log("claude usage", ex)
+
+
+# ---------------------------------------------------------------- GPT: one Codex app-server, one thread per conversation
+class GPTEngine:
     def __init__(self, app, prefs):
         self.app, self.p = app, None
         self.model = prefs.get("gpt_model")
         self.effort = prefs.get("gpt_effort")
-        self.busy, self.turn = False, None
-        self.tid = None
         self.error = None
         self.quota = None
         self.models = []
         self.nid = 0
         self.pending = {}
         self.wlock = threading.Lock()
-        self.items = 0
         self.loaded = set()  # threads already open in this engine (no resume needed)
-        self.stopping = False
+        self.convs = {}      # thread id -> GPTConv
 
     @property
     def ready(self):
-        return self.p is not None and self.p.poll() is None and bool(self.models)  # engine up (the thread may come on first use)
+        return self.p is not None and self.p.poll() is None and bool(self.models)
 
     def start(self):
         try:
@@ -327,10 +301,9 @@ class GPTHost:
                                       stderr=subprocess.DEVNULL, creationflags=NO_WINDOW,
                                       env=dict(os.environ, GROUPCHAT_HOSTED="1"))  # its hooks use the client's plain format
             threading.Thread(target=self.read, daemon=True).start()
-            self.call("initialize", {"clientInfo": {"name": "groupchat-app", "version": "0.2"}, "capabilities": {"experimentalApi": True}})
+            self.call("initialize", {"clientInfo": {"name": "groupchat-app", "version": "0.3"}, "capabilities": {"experimentalApi": True}})
             self.notify("initialized")
             self.load_models()
-            self.open_thread()
             self.read_limits()
             self.error = None
         except Exception as ex:
@@ -343,10 +316,12 @@ class GPTHost:
             self.p.stdin.flush()
 
     def call(self, method, params, timeout=120):
-        self.nid += 1
+        with self.wlock:
+            self.nid += 1
+            nid = self.nid
         q = queue.Queue()
-        self.pending[self.nid] = q
-        self.write({"jsonrpc": "2.0", "id": self.nid, "method": method, "params": params})
+        self.pending[nid] = q
+        self.write({"jsonrpc": "2.0", "id": nid, "method": method, "params": params})
         r = q.get(timeout=timeout)
         if "error" in r:
             raise RuntimeError(f"{method}: {r['error'].get('message', r['error'])}")
@@ -370,45 +345,6 @@ class GPTHost:
     def model_info(self):
         return next((m for m in self.models if m.get("id") == self.model), {})
 
-    def open_thread(self, create=False):
-        """Our own thread, forked once from the room's GPT window so GPT keeps its context; resumed afterwards.
-        A conversation with no GPT history gets its thread only when GPT is first addressed (create=True),
-        so looking at a conversation never leaves an empty thread behind in Codex."""
-        room = self.app.room
-        mine = C.load_json(os.path.join(room["dir"], "app-gpt-thread.json"), {}).get("thread")
-        if mine and mine not in self.loaded:
-            try:
-                self.call("thread/resume", {"threadId": mine, "excludeTurns": True, "developerInstructions": guide_text()})
-            except RuntimeError as ex:
-                if "missing source rollout" not in str(ex):
-                    raise
-                mine = None  # opened but never used, so nothing was saved: start it again
-        if mine:
-            self.tid = mine
-        else:
-            src = (C.codex_threads_of(room) or [None])[0]
-            if src:
-                self.tid = self.call("thread/fork", {"threadId": src, "developerInstructions": guide_text()})["thread"]["id"]
-                self.call("thread/name/set", {"threadId": self.tid, "name": f"群聊客户端 · {room['name']}"})
-            elif not create:
-                self.tid = None
-                return
-            else:  # a conversation started in the client: a fresh thread that knows it is a group chat
-                params = {"cwd": room["root"], "developerInstructions": guide_text()}
-                if room.get("project_id"):
-                    params["projectId"] = room["project_id"]
-                self.tid = self.call("thread/start", params)["thread"]["id"]
-                self.call("thread/name/set", {"threadId": self.tid, "name": room["name"]})
-            C.save_json(os.path.join(room["dir"], "app-gpt-thread.json"), {"thread": self.tid, "from": src})
-        self.loaded.add(self.tid)
-        with C.Lock(C.BINDINGS):  # this thread is now the room's GPT window
-            b = C.load_json(C.BINDINGS, {})
-            codex = {k: v for k, v in b.get("codex", {}).items() if v != room["dir"]}
-            codex[self.tid] = room["dir"]
-            b["codex"] = codex
-            C.save_json(C.BINDINGS, b)
-        C.set_cursor(room, self.tid, max(C.get_cursor(room, self.tid), 0))
-
     def read_limits(self):
         try:
             r = self.call("account/rateLimits/read", {}, timeout=30)
@@ -425,33 +361,7 @@ class GPTHost:
         note = "" if (week.get("windowDurationMins") or 0) >= 7 * 24 * 60 - 60 else f"（{(week.get('windowDurationMins') or 0) // 60} 小时窗口）"
         self.quota = {"remaining": pct_left(week.get("usedPercent")), "resets": when(week.get("resetsAt")), "note": note}
 
-    def send(self, text, seq):
-        if not self.tid:
-            self.open_thread(create=True)
-        C.mark_sent(self.app.room, "gpt", text, [seq], thread=self.tid)
-        params = {"threadId": self.tid, "input": [{"type": "text", "text": text}]}
-        if self.model:
-            params["model"] = self.model
-        if self.effort:
-            params["effort"] = self.effort
-        self.busy, self.items = True, 0
-        self.turn = self.call("turn/start", params)["turn"]["id"]
-
-    def stop_turn(self):
-        if self.busy and self.tid and self.turn:
-            self.stopping = True
-            self.call("turn/interrupt", {"threadId": self.tid, "turnId": self.turn})
-            return True
-        return False
-
-    def steer(self, text, seq):
-        # Codex runs the prompt hook for a steer too: mark the line as already in the channel so it is not recorded twice
-        C.mark_sent(self.app.room, "gpt", text, [seq], thread=self.tid)
-        self.call("turn/steer", {"threadId": self.tid, "expectedTurnId": self.turn, "input": [{"type": "text", "text": text}]})
-
     def read(self):
-        app = self.app
-        work = None
         for raw in self.p.stdout:
             try:
                 m = json.loads(raw)
@@ -467,49 +377,16 @@ class GPTHost:
                     self.write({"jsonrpc": "2.0", "id": m["id"], "error": {"code": -32601, "message": "群聊客户端不处理 " + m["method"]}})
                     continue
                 meth, p = m.get("method"), m.get("params") or {}
-                if p.get("threadId") not in (None, self.tid):
-                    continue
-                if meth == "turn/started":
-                    self.busy, self.turn = True, (p.get("turn") or {}).get("id", self.turn)
-                    work = WorkRecord(app.room, "gpt", self.tid, self.turn)
-                elif meth == "item/started":
-                    it = p.get("item") or {}
-                    kind = it.get("type")
-                    if kind == "agentMessage":
-                        if self.items:
-                            app.delta("gpt", "\n\n")
-                        self.items += 1
-                        app.activity("gpt", "")
-                    elif kind in ("commandExecution", "fileChange", "mcpToolCall", "webSearch", "dynamicToolCall"):
-                        label = {"commandExecution": "运行命令", "fileChange": "修改文件", "mcpToolCall": "调用工具",
-                                 "webSearch": "搜索网页", "dynamicToolCall": "调用工具"}[kind]
-                        app.activity("gpt", f"正在{label}")
-                elif meth == "item/agentMessage/delta":
-                    app.delta("gpt", p.get("delta", ""))
-                elif meth == "item/completed":
-                    it = p.get("item") or {}
-                    if work is not None:
-                        record_event(work, "gpt", it)
-                    if it.get("type") == "imageGeneration" and it.get("savedPath"):  # GPT made a picture
-                        cap = (it.get("revisedPrompt") or "生成的图片").replace("\n", " ")[:80]
-                        C.append(app.room, "gpt", f"![{cap}]({it['savedPath']})", "codex", session=self.tid, kind="image")
-                elif meth == "turn/completed":
-                    if work is not None:
-                        record_event(work, "finish", (p.get("turn") or {}).get("status") or "completed")
-                        work = None
-                    self.busy = False
-                    app.live_end("gpt", stopped=self.stopping or (p.get("turn") or {}).get("status") == "interrupted")
-                    self.stopping = False
-                elif meth == "account/rateLimits/updated":
+                if meth == "account/rateLimits/updated":
                     self.take_limits(p.get("rateLimits") or {})
+                    continue
+                conv = self.convs.get(p.get("threadId"))
+                if conv:
+                    conv.on_event(meth, p)
             except Exception as ex:
                 log("gpt read", ex)
-        if work is not None:
-            try:
-                work.finish("process-ended")
-            except Exception as ex:
-                log("gpt work record", ex)
-        self.busy = False
+        for conv in list(self.convs.values()):
+            conv.engine_ended()
         self.error = self.error or "GPT 引擎已退出"
 
     def options(self):
@@ -521,11 +398,7 @@ class GPTHost:
                 "model": self.model, "efforts": [{"id": e, "label": e} for e in efforts], "effort": self.effort}
 
     def apply(self, model, effort):
-        self.model, self.effort = model, effort  # used from the next turn on
-
-    def status(self):
-        return {"ready": self.ready, "busy": self.busy, "queued": 0, "quota": self.quota, "error": self.error,
-                "access": self.access}
+        self.model, self.effort = model, effort  # used from the next turn on, in every conversation
 
     @property
     def access(self):
@@ -536,6 +409,127 @@ class GPTHost:
             return ""
         sandbox = {"danger-full-access": "完全访问", "workspace-write": "工作区可写", "read-only": "只读"}.get(cfg.get("sandbox_mode"), cfg.get("sandbox_mode", ""))
         return sandbox + ("" if cfg.get("approval_policy") in (None, "never") else f" · 审批 {cfg.get('approval_policy')}")
+
+
+class GPTConv:
+    """One conversation's GPT thread inside the shared engine."""
+
+    def __init__(self, engine, app, room):
+        self.engine, self.app, self.room, self.rid = engine, app, room, rid_of(room)
+        self.tid, self.turn = None, None
+        self.busy, self.stopping = False, False
+        self.items = 0
+        self.work = None
+
+    def open(self, create=False):
+        """Our own thread, forked once from the room's GPT window so GPT keeps its context; resumed afterwards.
+        A conversation with no GPT history gets its thread only when GPT is first addressed (create=True),
+        so looking at a conversation never leaves an empty thread behind in Codex."""
+        eng, room = self.engine, self.room
+        mine = C.load_json(os.path.join(room["dir"], "app-gpt-thread.json"), {}).get("thread")
+        if mine and mine not in eng.loaded:
+            try:
+                eng.call("thread/resume", {"threadId": mine, "excludeTurns": True, "developerInstructions": guide_text()})
+            except RuntimeError as ex:
+                if "missing source rollout" not in str(ex):
+                    raise
+                mine = None  # opened but never used, so nothing was saved: start it again
+        if mine:
+            self.tid = mine
+        else:
+            src = (C.codex_threads_of(room) or [None])[0]
+            if src:
+                self.tid = eng.call("thread/fork", {"threadId": src, "developerInstructions": guide_text()})["thread"]["id"]
+                eng.call("thread/name/set", {"threadId": self.tid, "name": f"群聊客户端 · {room['name']}"})
+            elif not create:
+                return
+            else:  # a conversation started in the client: a fresh thread that knows it is a group chat
+                params = {"cwd": room["root"], "developerInstructions": guide_text()}
+                if room.get("project_id"):
+                    params["projectId"] = room["project_id"]
+                self.tid = eng.call("thread/start", params)["thread"]["id"]
+                eng.call("thread/name/set", {"threadId": self.tid, "name": room["name"]})
+            C.save_json(os.path.join(room["dir"], "app-gpt-thread.json"), {"thread": self.tid, "from": src})
+        eng.loaded.add(self.tid)
+        eng.convs[self.tid] = self
+        with C.Lock(C.BINDINGS):  # this thread is now the room's GPT window
+            b = C.load_json(C.BINDINGS, {})
+            codex = {k: v for k, v in b.get("codex", {}).items() if v != room["dir"]}
+            codex[self.tid] = room["dir"]
+            b["codex"] = codex
+            C.save_json(C.BINDINGS, b)
+
+    def send(self, text, seq):
+        if not self.tid or self.tid not in self.engine.convs:
+            self.open(create=True)
+        C.mark_sent(self.room, "gpt", text, [seq], thread=self.tid)
+        params = {"threadId": self.tid, "input": [{"type": "text", "text": text}]}
+        if self.engine.model:
+            params["model"] = self.engine.model
+        if self.engine.effort:
+            params["effort"] = self.engine.effort
+        self.busy, self.items = True, 0
+        self.turn = self.engine.call("turn/start", params)["turn"]["id"]
+
+    def stop_turn(self):
+        if self.busy and self.tid and self.turn:
+            self.stopping = True
+            self.engine.call("turn/interrupt", {"threadId": self.tid, "turnId": self.turn})
+            return True
+        return False
+
+    def steer(self, text, seq):
+        # Codex runs the prompt hook for a steer too: mark the line as already in the channel so it is not recorded twice
+        C.mark_sent(self.room, "gpt", text, [seq], thread=self.tid)
+        self.engine.call("turn/steer", {"threadId": self.tid, "expectedTurnId": self.turn, "input": [{"type": "text", "text": text}]})
+
+    def on_event(self, meth, p):
+        app, rid = self.app, self.rid
+        if meth == "turn/started":
+            self.busy, self.turn = True, (p.get("turn") or {}).get("id", self.turn)
+            self.work = WorkRecord(self.room, "gpt", self.tid, self.turn)
+        elif meth == "item/started":
+            it = p.get("item") or {}
+            kind = it.get("type")
+            if kind == "agentMessage":
+                if self.items:
+                    app.delta(rid, "gpt", "\n\n")
+                self.items += 1
+                app.activity(rid, "gpt", "")
+            elif kind in ("commandExecution", "fileChange", "mcpToolCall", "webSearch", "dynamicToolCall"):
+                label = {"commandExecution": "运行命令", "fileChange": "修改文件", "mcpToolCall": "调用工具",
+                         "webSearch": "搜索网页", "dynamicToolCall": "调用工具"}[kind]
+                app.activity(rid, "gpt", f"正在{label}")
+        elif meth == "item/agentMessage/delta":
+            app.delta(rid, "gpt", p.get("delta", ""))
+        elif meth == "item/completed":
+            it = p.get("item") or {}
+            if self.work is not None:
+                record_event(self.work, "gpt", it)
+            if it.get("type") == "imageGeneration" and it.get("savedPath"):  # GPT made a picture
+                cap = (it.get("revisedPrompt") or "生成的图片").replace("\n", " ")[:80]
+                C.append(self.room, "gpt", f"![{cap}]({it['savedPath']})", "codex", session=self.tid, kind="image")
+        elif meth == "turn/completed":
+            if self.work is not None:
+                record_event(self.work, "finish", (p.get("turn") or {}).get("status") or "completed")
+                self.work = None
+            self.busy = False
+            app.live_end(rid, "gpt", stopped=self.stopping or (p.get("turn") or {}).get("status") == "interrupted")
+            self.stopping = False
+
+    def engine_ended(self):
+        if self.work is not None:
+            try:
+                self.work.finish("process-ended")
+            except Exception as ex:
+                log("gpt work record", ex)
+            self.work = None
+        self.busy = False
+        self.app.live_end(self.rid, "gpt")
+
+    def status(self):
+        eng = self.engine
+        return {"ready": eng.ready, "busy": self.busy, "queued": 0, "quota": eng.quota, "error": eng.error, "access": eng.access}
 
 
 # ---------------------------------------------------------------- the app
@@ -562,6 +556,21 @@ def conversations():
     return out
 
 
+class Session:
+    """Everything that belongs to one conversation: its two model sessions and what they are writing right now."""
+
+    def __init__(self, app, room):
+        self.room = room
+        self.claude = ClaudeHost(app, room)
+        self.gpt = GPTConv(app.gpt, app, room)
+        self.live = {}      # who -> text written so far in the current answer
+        self.act = {}       # who -> current activity label
+
+    @property
+    def busy(self):
+        return self.claude.busy or self.gpt.busy
+
+
 class App:
     def __init__(self, cwd):
         self.prefs = C.load_json(PREFS, {})
@@ -571,14 +580,35 @@ class App:
         else:
             self.room = C.resolve_room(cwd)
         self.route = self.prefs.get("route", "auto")
+        self.claude_cfg = {"model": self.prefs.get("claude_model", "claude-opus-5-5"),
+                           "effort": self.prefs.get("claude_effort", "medium"),
+                           "perm": self.prefs.get("claude_permission", "bypassPermissions")}
+        self.claude_quota = None
         self.window = None
         self.last = 0
-        self.buf = {}
+        self.buf = {}               # who -> text not yet pushed to the page (current conversation only)
         self.blk = threading.Lock()
-        self.claude = ClaudeHost(self, self.prefs)
-        self.gpt = GPTHost(self, self.prefs)
+        self.gpt = GPTEngine(self, self.prefs)
+        self.sessions = {}          # conversation id -> Session
 
-    # --- pushes to the page
+    @property
+    def rid(self):
+        return rid_of(self.room)
+
+    def sess(self, rid=None):
+        rid = rid or self.rid
+        if rid not in self.sessions:
+            room = self.room if rid == self.rid else C.room_by_dir(os.path.join(C.ROOMS_DIR, rid))
+            self.sessions[rid] = Session(self, room)
+        return self.sessions[rid]
+
+    def take_claude_usage(self, obj):
+        """get_usage reply: rate_limits.seven_day = {utilization: percent, resets_at: ISO time}."""
+        w = (obj.get("rate_limits") or {}).get("seven_day") or {}
+        if w.get("utilization") is not None:
+            self.claude_quota = {"remaining": pct_left(w["utilization"], 100), "resets": when(w.get("resets_at"))}
+
+    # --- pushes to the page; events from a conversation that is not on screen are only kept
     def js(self, fn, *args):
         if self.window:
             try:
@@ -586,17 +616,27 @@ class App:
             except Exception as ex:
                 log("js", ex)
 
-    def delta(self, who, text):
+    def delta(self, rid, who, text):
+        s = self.sess(rid)
         with self.blk:
-            self.buf[who] = self.buf.get(who, "") + text
+            s.live[who] = s.live.get(who, "") + text
+            if rid == self.rid:
+                self.buf[who] = self.buf.get(who, "") + text
 
-    def activity(self, who, label):
-        self.flush()
-        self.js("activity", who, label)
+    def activity(self, rid, who, label):
+        self.sess(rid).act[who] = label
+        if rid == self.rid:
+            self.flush()
+            self.js("activity", who, label)
 
-    def live_end(self, who, stopped=False):
-        self.flush()
-        self.js("liveEnd", who, bool(stopped))
+    def live_end(self, rid, who, stopped=False):
+        s = self.sess(rid)
+        with self.blk:
+            s.live.pop(who, None)
+            s.act.pop(who, None)
+        if rid == self.rid:
+            self.flush()
+            self.js("liveEnd", who, bool(stopped))
 
     def flush(self):
         with self.blk:
@@ -620,12 +660,18 @@ class App:
                 self.js("status", self.status_payload())
 
     def status_payload(self):
-        return {"models": {"claude": self.claude.status(), "gpt": self.gpt.status()}, "conn": ""}
+        s = self.sess()
+        return {"models": {"claude": s.claude.status(), "gpt": s.gpt.status()}, "conn": "",
+                "busyRooms": [rid for rid, x in self.sessions.items() if x.busy]}
 
     def save_prefs(self):
-        self.prefs.update({"route": self.route, "claude_model": self.claude.model, "claude_effort": self.claude.effort,
-                           "gpt_model": self.gpt.model, "gpt_effort": self.gpt.effort})
+        self.prefs.update({"route": self.route, "claude_model": self.claude_cfg["model"], "claude_effort": self.claude_cfg["effort"],
+                           "gpt_model": self.gpt.model, "gpt_effort": self.gpt.effort, "room_id": self.rid})
         C.save_json(PREFS, self.prefs)
+
+    def claude_options(self):
+        return {"models": [{"id": m, "label": l} for m, l in CLAUDE_MODELS], "model": self.claude_cfg["model"],
+                "efforts": [{"id": e, "label": e} for e in CLAUDE_EFFORTS], "effort": self.claude_cfg["effort"]}
 
 
 class Api:
@@ -638,35 +684,29 @@ class Api:
 
     def init(self):
         a = self._app
+        s = a.sess()
         lines = C.read_after(a.room, 0)
-        a.last = lines[-1]["seq"] if lines else 0
-        return {"tree": conversations(), "room": os.path.basename(a.room["dir"]), "title": a.room["name"], "lines": lines[-200:],
-                "options": {"claude": a.claude.options(), "gpt": a.gpt.options()}, "status": a.status_payload()}
+        with a.blk:
+            a.last = lines[-1]["seq"] if lines else 0
+            a.buf = {}  # the page gets the whole of what is being written below, in `live`
+            live = {who: {"text": s.live.get(who, ""), "activity": s.act.get(who, "")}
+                    for who in ("claude", "gpt") if getattr(s, who).busy}
+        return {"tree": conversations(), "room": a.rid, "title": a.room["name"], "lines": lines[-200:], "live": live,
+                "options": {"claude": a.claude_options(), "gpt": a.gpt.options()}, "status": a.status_payload()}
 
     def tree(self):
         return conversations()
 
     def switch_room(self, rid):
+        """Just changes what is on screen: answers in progress elsewhere keep running in the background."""
         a = self._app
-        if rid == os.path.basename(a.room["dir"]):
-            return self.init()
-        if a.claude.busy or a.gpt.busy:
-            return {"error": "有模型正在回答，等它说完再切换"}
-        a.claude.stop()
-        a.claude.queue = []
-        a.room = C.room_by_dir(os.path.join(C.ROOMS_DIR, rid))
-        a.prefs["room_id"] = rid
-        a.save_prefs()
-        if a.gpt.p and a.gpt.p.poll() is None:
-            try:
-                a.gpt.tid = None
-                a.gpt.open_thread()
-                a.gpt.error = None
-            except Exception as ex:
-                a.gpt.error = f"GPT 打开对话失败：{ex}"[:200]
-                log("gpt switch", ex)
-        if a.window:
-            a.window.set_title(f"群聊客户端 · {a.room['name']}")
+        if rid != a.rid:
+            with a.blk:
+                a.room = a.sess(rid).room if rid in a.sessions else C.room_by_dir(os.path.join(C.ROOMS_DIR, rid))
+                a.buf = {}
+            a.save_prefs()
+            if a.window:
+                a.window.set_title(f"群聊客户端 · {a.room['name']}")
         return self.init()
 
     def new_room(self, pid):
@@ -688,26 +728,29 @@ class Api:
         info = C.load_json(path, None)
         if info is None:
             return {"error": "找不到这个对话"}
-        current = rid == os.path.basename(a.room["dir"])
-        if archived and current and (a.claude.busy or a.gpt.busy):
-            return {"error": "有模型正在回答，等它说完再归档"}
+        s = a.sessions.get(rid)
+        if archived and s and s.busy:
+            return {"error": "这个群聊里有模型正在回答，等它说完再归档"}
         info.update(archived=bool(archived), archived_at=time.time() if archived else None)
         C.save_json(path, info)
+        if archived and s:  # nothing will run there any more
+            s.claude.stop()
+            a.sessions.pop(rid, None)
         tid = C.load_json(os.path.join(C.ROOMS_DIR, rid, "app-gpt-thread.json"), {}).get("thread")
-        if tid and a.gpt.p and a.gpt.p.poll() is None:
+        if tid and a.gpt.ready:
             try:
                 a.gpt.call("thread/archive" if archived else "thread/unarchive", {"threadId": tid})
                 if archived:
                     a.gpt.loaded.discard(tid)
+                    a.gpt.convs.pop(tid, None)
             except Exception as ex:  # e.g. a thread GPT never spoke in has nothing to archive
                 log("gpt archive", ex)
-        if archived and current:  # move to the most recent conversation that is still open
+        if archived and rid == a.rid:  # move to the most recent conversation that is still open
             rest = [r for p in conversations() for r in p["rooms"] if not r["archived"] and r["id"] != rid]
             if rest:
                 return self.switch_room(max(rest, key=lambda r: r["at"])["id"])
-            pid = info.get("project_id") or "_"
-            return self.new_room(pid)
-        return {"tree": conversations(), "room": os.path.basename(a.room["dir"]), "title": a.room["name"], "keep": True}
+            return self.new_room(info.get("project_id") or "_")
+        return {"tree": conversations(), "room": a.rid, "title": a.room["name"], "keep": True}
 
     def rename_room(self, rid, title):
         title = (title or "").strip()[:60]
@@ -718,15 +761,19 @@ class Api:
         info.update(name=title, title=title)
         C.save_json(path, info)
         a = self._app
-        if rid == os.path.basename(a.room["dir"]):
+        s = a.sessions.get(rid)
+        if s:
+            s.room["name"] = title
+        if rid == a.rid:
             a.room["name"] = title
             if a.window:
                 a.window.set_title(f"群聊客户端 · {title}")
-            if a.gpt.tid:
-                try:
-                    a.gpt.call("thread/name/set", {"threadId": a.gpt.tid, "name": title})
-                except Exception as ex:
-                    log("gpt rename", ex)
+        tid = C.load_json(os.path.join(C.ROOMS_DIR, rid, "app-gpt-thread.json"), {}).get("thread")
+        if tid and a.gpt.ready:
+            try:
+                a.gpt.call("thread/name/set", {"threadId": tid, "name": title})
+            except Exception as ex:
+                log("gpt rename", ex)
         return {"tree": conversations(), "title": title}
 
     def set_route(self, route):
@@ -734,15 +781,21 @@ class Api:
         self._app.save_prefs()
 
     def set_model(self, who, model, effort):
-        host = self._app.claude if who == "claude" else self._app.gpt
-        host.apply(model, effort)
-        self._app.save_prefs()
-        self._app.js("options", {who: host.options()})
+        """Settings are shared by all conversations; a Claude session picks them up at its next message."""
+        a = self._app
+        if who == "claude":
+            a.claude_cfg.update(model=model, effort=effort)
+            opts = a.claude_options()
+        else:
+            a.gpt.apply(model, effort)
+            opts = a.gpt.options()
+        a.save_prefs()
+        a.js("options", {who: opts})
 
     def stop(self, who):
-        host = self._app.claude if who == "claude" else self._app.gpt
+        s = self._app.sess()
         try:
-            ok = host.stop_turn()
+            ok = getattr(s, who).stop_turn()
         except Exception as ex:
             log("stop", ex)
             return {"error": f"停止失败：{ex}"[:200]}
@@ -765,7 +818,8 @@ class Api:
 
     def send(self, text, route):
         a = self._app
-        c, g = a.claude, a.gpt
+        s = a.sess()
+        c, g = s.claude, s.gpt
         low = text.lower()
         target = "gpt" if ("@gpt" in low or "@codex" in low) else "claude" if "@claude" in low else None
         if not target:
@@ -780,12 +834,12 @@ class Api:
             else:
                 target = "claude"
         if target == "gpt":
-            if not g.ready:
-                return {"error": g.error or "GPT 还没连上"}
+            if not a.gpt.ready:
+                return {"error": a.gpt.error or "GPT 还没连上"}
             mode = "steer" if g.busy else "start"
         else:
             mode = "steer" if c.busy else "start"
-        e = C.append(a.room, "user", text, "client", session="client", to=[target], mode=mode)
+        e = C.append(s.room, "user", text, "client", session="client", to=[target], mode=mode)
         try:
             if target == "gpt":
                 g.steer(text, e["seq"]) if mode == "steer" else g.send(text, e["seq"])
@@ -832,7 +886,7 @@ def main():
     if not C.room_active(app.room) or C.load_json(os.path.join(app.room["dir"], "room.json"), {}).get("archived"):
         first_open(app)
     threading.Thread(target=app.gpt.start, daemon=True).start()
-    threading.Thread(target=app.claude.probe_usage, daemon=True).start()
+    threading.Thread(target=probe_claude_usage, args=(app,), daemon=True).start()
     try:  # its own taskbar identity, so the window shows the group-chat icon instead of Python's
         import ctypes
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("claude-codex.groupchat")
@@ -862,7 +916,8 @@ def main():
     tray.Tray(os.path.join(HERE, "groupchat.ico"), "群聊：GPT + Claude", show, quit_all).start()
     threading.Thread(target=app.pump, daemon=True).start()
     webview.start(gui="edgechromium", private_mode=False)
-    app.claude.stop()
+    for s in list(app.sessions.values()):
+        s.claude.stop()
     if app.gpt.p:
         app.gpt.p.kill()
 

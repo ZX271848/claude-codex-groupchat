@@ -54,6 +54,7 @@ select:focus,textarea:focus{outline:2px solid #9cc2b8;outline-offset:0}
 .arch-head{display:flex;align-items:center;gap:6px;padding:6px;font-size:12px;color:var(--muted);cursor:pointer;border-top:1px solid var(--line);margin-top:6px;user-select:none}
 .arch-head:hover{color:var(--accent)}
 .conv.archived .t{color:var(--muted)}
+.conv.working .t::after{content:'';display:inline-block;width:7px;height:7px;border-radius:50%;background:#e0a44d;margin-left:6px;vertical-align:middle;animation:pulse 1.2s ease-in-out infinite}
 .nav-empty{font-size:12px;color:var(--muted);padding:2px 10px 6px}
 .title{font-size:15px;font-weight:600;color:var(--ink)}
 .chat{min-width:0;min-height:0;display:flex;flex-direction:column}
@@ -328,7 +329,8 @@ window.gc = {
       l.el.querySelector('.activity').textContent=''; delete state.live[who]; return}
     /* the final line replaces the live bubble; if none arrives, drop it after a while */
     setTimeout(()=>{const x=state.live[who]; if(x&&!x.el.querySelector('.bubble').textContent.trim())removeLive(who)},4000)},
-  status(s){Object.assign(state.status, s.models||{}); if(s.conn!=null)state.connNote=s.conn; renderStatus()},
+  status(s){Object.assign(state.status, s.models||{}); if(s.conn!=null)state.connNote=s.conn; renderStatus();
+    if(s.busyRooms){state.busyRooms=s.busyRooms; markBusy()}},
   options(o){ for(const who of ['claude','gpt']){const m=o[who]; if(!m)continue;
       fillSelect($('#model-'+who), m.models, m.model); fillSelect($('#effort-'+who), m.efforts, m.effort);} },
   reset(){inner.innerHTML='<div class="empty">还没有消息</div>'; state.live={}},
@@ -374,12 +376,17 @@ function renderNav(tree){
       (open.length?open.map(r=>convHtml(r,false)).join(''):'<div class="nav-empty">还没有群聊</div>')+`</div>`}).join('')+
     (arch.length?`<div class="arch-head" id="arch-toggle">${state.showArch?'▾':'▸'} 已归档（${arch.length}）</div>`+
       (state.showArch?arch.sort((a,b)=>b.at-a.at).map(r=>convHtml(r,true)).join(''):''):'');
+  markBusy();
 }
+function markBusy(){document.querySelectorAll('.conv').forEach(c=>c.classList.toggle('working',(state.busyRooms||[]).includes(c.dataset.id)))}
 function show(r){
   if(r.error){state.connNote=r.error; renderStatus(); return}
   if(r.keep){renderNav(r.tree); return}
   gc.reset(); state.room=r.room; $('#title').textContent=r.title; renderNav(r.tree);
-  gc.options(r.options); gc.lines(r.lines); gc.status(r.status); input.focus();
+  gc.options(r.options); gc.lines(r.lines);
+  for(const [who,l] of Object.entries(r.live||{})){ /* an answer still being written in this conversation */
+    gc.delta(who, l.text||'', true); if(l.activity)gc.activity(who, l.activity)}
+  gc.status(r.status); input.focus();
 }
 $('#nav').addEventListener('click',async e=>{
   if(e.target.closest('#arch-toggle')){state.showArch=!state.showArch; renderNav(state.tree); return}
