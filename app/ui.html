@@ -1,0 +1,436 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>群聊</title>
+<style>
+:root{
+  --bg:#f3f6f7;--panel:#fff;--ink:#243c42;--muted:#6b8085;--line:#dbe4e6;--accent:#285d53;
+  --user:#eaf1fb;--user-line:#d3e0f3;--user-ink:#294b78;
+  --claude:#fbf5ef;--claude-line:#eddccb;--claude-ink:#9a5a32;
+  --gpt:#eff7f3;--gpt-line:#d3e8de;--gpt-ink:#23735a;
+  --code:#f4f7f7;
+  font:14px/1.6 "Segoe UI","Microsoft YaHei UI","Microsoft YaHei",sans-serif;color:var(--ink);background:var(--bg);
+}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{display:flex;flex-direction:column;overflow:hidden}
+button,select,textarea{font:inherit;color:inherit}
+select{background:var(--panel);border:1px solid var(--line);border-radius:7px;padding:5px 8px;width:100%}
+select:focus,textarea:focus{outline:2px solid #9cc2b8;outline-offset:0}
+
+/* top bar */
+.topbar{display:flex;align-items:center;gap:14px;padding:10px 20px;background:var(--panel);border-bottom:1px solid var(--line);flex-shrink:0}
+.brand{font-weight:600;font-size:17px}
+.brand small{font-weight:400;font-size:12px;color:var(--muted);margin-left:8px}
+.topbar select{width:auto;min-width:150px}
+.topbar .spacer{flex:1}
+.conn{font-size:12px;color:var(--muted)}
+
+/* layout */
+.main{flex:1;min-height:0;display:grid;grid-template-columns:250px minmax(0,1fr) 300px}
+.nav{background:#fafbfb;border-right:1px solid var(--line);overflow-y:auto;padding:12px 10px}
+.proj{margin-bottom:14px}
+.proj-head{display:flex;align-items:center;justify-content:space-between;padding:4px 6px;font-size:12px;color:var(--muted);font-weight:600}
+.proj-head button{border:0;background:none;cursor:pointer;color:var(--muted);font-size:16px;line-height:1;padding:0 4px;border-radius:5px}
+.proj-head button:hover{background:#e9f0ee;color:var(--accent)}
+.conv{display:flex;flex-direction:column;padding:6px 10px;border-radius:8px;cursor:pointer;margin:1px 0}
+.conv:hover{background:#eef3f2}
+.conv.active{background:#e3efeb}
+.conv .t{font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.conv.active .t{color:var(--accent);font-weight:600}
+.conv .w{font-size:11px;color:var(--muted)}
+.conv .t[contenteditable=true]{outline:1px solid #9cc2b8;background:#fff;border-radius:4px;padding:0 3px;text-overflow:clip}
+.conv{position:relative}
+.conv .acts{position:absolute;right:6px;top:50%;transform:translateY(-50%);display:none;gap:4px}
+.conv:hover .acts{display:flex}
+.conv.editing .acts{display:none}
+.act{border:1px solid var(--line);background:#fff;border-radius:6px;font-size:11px;padding:1px 7px;cursor:pointer;color:var(--muted)}
+.act:hover{color:var(--accent);border-color:#9cc2b8}
+.conv:hover .t{padding-right:84px}
+.conv.archived:hover .t{padding-right:44px}
+.title-row{display:flex;align-items:center;gap:8px}
+.arch-head{display:flex;align-items:center;gap:6px;padding:6px;font-size:12px;color:var(--muted);cursor:pointer;border-top:1px solid var(--line);margin-top:6px;user-select:none}
+.arch-head:hover{color:var(--accent)}
+.conv.archived .t{color:var(--muted)}
+.nav-empty{font-size:12px;color:var(--muted);padding:2px 10px 6px}
+.title{font-size:15px;font-weight:600;color:var(--ink)}
+.chat{min-width:0;min-height:0;display:flex;flex-direction:column}
+.log{flex:1;min-height:0;overflow-y:auto;padding:22px 28px 10px;scroll-behavior:smooth}
+.log-inner{max-width:880px;margin:0 auto;display:flex;flex-direction:column;gap:14px}
+.side{background:var(--panel);border-left:1px solid var(--line);overflow-y:auto;padding:16px}
+
+/* messages */
+.msg{display:flex;flex-direction:column;max-width:88%}
+.msg .head{font-size:12px;color:var(--muted);margin:0 4px 4px;display:flex;gap:8px;align-items:baseline}
+.msg .who{font-weight:600}
+.bubble{border:1px solid var(--line);border-radius:12px;padding:10px 14px;background:var(--panel);overflow-wrap:anywhere;min-width:0}
+.msg.user{align-self:flex-end}
+.msg.user .head{justify-content:flex-end}
+.msg.user .who{color:var(--user-ink)}
+.msg.user .bubble{background:var(--user);border-color:var(--user-line);border-top-right-radius:4px;white-space:pre-wrap}
+.msg.claude{align-self:flex-start}
+.msg.claude .who{color:var(--claude-ink)}
+.msg.claude .bubble{background:var(--claude);border-color:var(--claude-line);border-top-left-radius:4px}
+.msg.gpt{align-self:flex-start}
+.msg.gpt .who{color:var(--gpt-ink)}
+.msg.gpt .bubble{background:var(--gpt);border-color:var(--gpt-line);border-top-left-radius:4px}
+.tag{font-size:11px;padding:0 6px;border-radius:4px;border:1px solid var(--line);color:var(--muted);background:#fff}
+.tag.steer{border-color:#e7c9a4;color:#8a5a1d;background:#fff8ee}
+.tag.queue{border-color:#c9d6e8;color:#3d5f8f;background:#f5f8fd}
+.live .bubble{border-style:dashed}
+.live .dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:currentColor;animation:pulse 1.2s ease-in-out infinite;margin-right:2px}
+@keyframes pulse{0%,100%{opacity:.25}50%{opacity:1}}
+.activity{font-size:12px;color:var(--muted);margin-top:6px}
+.stop{border:1px solid #e6c3b3;background:#fff6f2;color:#a2482a;border-radius:6px;font-size:11px;padding:0 8px;cursor:pointer;line-height:18px}
+.stop:hover{background:#fde9e1}
+.msg.stopped .bubble{border-style:solid;opacity:.85}
+.msg.stopped .note{font-size:11px;color:#a2482a}
+.empty{color:var(--muted);text-align:center;padding:60px 0;font-size:13px}
+
+/* markdown */
+.md>:first-child{margin-top:0}.md>:last-child{margin-bottom:0}
+.md p{margin:.45em 0}
+.md h1,.md h2,.md h3,.md h4{margin:.8em 0 .35em;line-height:1.35}
+.md h1{font-size:18px}.md h2{font-size:16px}.md h3,.md h4{font-size:14.5px}
+.md ul,.md ol{margin:.4em 0;padding-left:1.4em}
+.md li{margin:.15em 0}
+.md code{font:12.5px/1.5 Consolas,"Microsoft YaHei",monospace;background:#ffffffb0;border:1px solid #0000000d;border-radius:4px;padding:0 4px}
+.md pre{background:var(--code);border:1px solid var(--line);border-radius:8px;padding:10px 12px;overflow-x:auto;margin:.6em 0}
+.md pre code{background:none;border:0;padding:0;white-space:pre}
+.md blockquote{margin:.5em 0;padding:.1em 0 .1em 12px;border-left:3px solid var(--line);color:#4c6469}
+.md table{border-collapse:collapse;margin:.6em 0;font-size:13px;display:block;overflow-x:auto}
+.md th,.md td{border:1px solid var(--line);padding:5px 9px;text-align:left;vertical-align:top}
+.md th{background:#ffffff90;font-weight:600}
+.md a{color:var(--accent)}
+.md img.pic{display:block;max-width:100%;max-height:440px;border-radius:8px;border:1px solid var(--line);margin:.5em 0;cursor:zoom-in;background:#fff;min-height:40px;min-width:60px}
+.md hr{border:0;border-top:1px solid var(--line);margin:.8em 0}
+
+/* composer */
+.composer{flex-shrink:0;background:var(--panel);border-top:1px solid var(--line);padding:10px 28px 14px}
+.composer-inner{max-width:880px;margin:0 auto}
+.route-row{display:flex;align-items:center;gap:10px;margin-bottom:8px;font-size:12px;color:var(--muted)}
+.seg{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.seg button{border:0;background:var(--panel);padding:4px 12px;cursor:pointer;font-size:12px;color:var(--muted)}
+.seg button+button{border-left:1px solid var(--line)}
+.seg button[aria-pressed=true]{background:#e9f3ef;color:var(--accent);font-weight:600}
+.route-hint b{color:var(--ink);font-weight:600}
+.input-row{display:flex;gap:10px;align-items:flex-end}
+textarea{flex:1;resize:none;min-height:46px;max-height:220px;border:1px solid var(--line);border-radius:10px;padding:10px 12px;background:#fbfcfc;line-height:1.55}
+.send{border:0;border-radius:10px;background:var(--accent);color:#fff;padding:0 20px;height:46px;cursor:pointer;font-weight:600}
+.send:hover{background:#214f46}
+
+/* side cards */
+.card{border:1px solid var(--line);border-radius:10px;padding:12px 13px;margin-bottom:14px}
+.card.gpt{background:linear-gradient(#f4faf7,#fff 60px)}
+.card.claude{background:linear-gradient(#fdf8f3,#fff 60px)}
+.card-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px}
+.card-head b{font-size:15px}
+.card.gpt .card-head b{color:var(--gpt-ink)}
+.card.claude .card-head b{color:var(--claude-ink)}
+.state{font-size:12px;color:var(--muted);display:flex;align-items:center;gap:5px}
+.state i{width:8px;height:8px;border-radius:50%;background:#b8c6c9;display:inline-block}
+.state.busy i{background:#e0a44d;animation:pulse 1.2s infinite}
+.state.idle i{background:#3aa17e}
+.state.off i{background:#c9d2d4}
+.field{margin-bottom:9px}
+.field label{display:block;font-size:12px;color:var(--muted);margin-bottom:3px}
+.quota{margin-top:10px;font-size:12px;color:var(--muted)}
+.bar{height:6px;border-radius:3px;background:#e8eeef;overflow:hidden;margin:4px 0 3px}
+.bar span{display:block;height:100%;border-radius:3px;background:#5fae94}
+.card.claude .bar span{background:#d59a6c}
+.side h3{font-size:12px;color:var(--muted);font-weight:500;margin:4px 0 10px}
+.rules{font-size:12px;color:var(--muted);line-height:1.75;border-top:1px solid var(--line);padding-top:12px}
+.rules b{color:var(--ink);font-weight:600}
+</style>
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">群聊<small>用户 · GPT · Claude</small></div>
+  <div class="title-row"><div class="title" id="title" title="双击改名"></div><button class="act" id="rename-title" title="给当前群聊改名">改名</button></div>
+  <div class="spacer"></div>
+  <div class="conn" id="conn"></div>
+</header>
+<div class="main">
+  <nav class="nav" id="nav"></nav>
+  <section class="chat">
+    <div class="log" id="log"><div class="log-inner" id="log-inner"></div></div>
+    <div class="composer">
+      <div class="composer-inner">
+        <div class="route-row">
+          <div class="seg" id="route">
+            <button data-route="auto" aria-pressed="true">自动</button>
+            <button data-route="claude" aria-pressed="false">Claude</button>
+            <button data-route="gpt" aria-pressed="false">GPT</button>
+          </div>
+          <span class="route-hint" id="route-hint"></span>
+        </div>
+        <div class="input-row">
+          <textarea id="input" rows="1" placeholder="说点什么… Enter 发送，Shift+Enter 换行；写 @gpt / @claude 可临时指定"></textarea>
+          <button class="send" id="send">发送</button>
+        </div>
+      </div>
+    </div>
+  </section>
+  <aside class="side">
+    <h3>模型</h3>
+    <div class="card claude" id="card-claude">
+      <div class="card-head"><b>Claude</b><span style="display:flex;gap:8px;align-items:center"><button class="stop" data-stop="claude" id="stop-claude" hidden>停止</button><span class="state off" id="state-claude"><i></i><span>未连接</span></span></span></div>
+      <div class="field"><label>型号</label><select id="model-claude"></select></div>
+      <div class="field"><label>思考强度</label><select id="effort-claude"></select></div>
+      <div class="quota" id="quota-claude">周额度：读取中…</div>
+    </div>
+    <div class="card gpt" id="card-gpt">
+      <div class="card-head"><b>GPT</b><span style="display:flex;gap:8px;align-items:center"><button class="stop" data-stop="gpt" id="stop-gpt" hidden>停止</button><span class="state off" id="state-gpt"><i></i><span>未连接</span></span></span></div>
+      <div class="field"><label>型号</label><select id="model-gpt"></select></div>
+      <div class="field"><label>思考强度</label><select id="effort-gpt"></select></div>
+      <div class="quota" id="quota-gpt">周额度：读取中…</div>
+    </div>
+    <div class="rules">
+      <b>自动路由</b>：两边都空闲时交给 Claude；Claude 在忙交给 GPT；GPT 在忙交给 Claude；都在忙时插给 GPT。<br>
+      <b>指定发给正在忙的一方</b>（@ 或手动选）：插进它当前这一轮（引导）。Claude 在两次工具调用之间接收；只在写字时，写完这段才看到。<br>
+      一次只叫醒一个；另一个会在它下次开口前看到原话。
+    </div>
+  </aside>
+</div>
+<script>
+const $ = s => document.querySelector(s);
+const NAMES = {user:'你', claude:'Claude', gpt:'GPT'};
+const WHERE = {codex:'在 Codex', 'claude-code':'在 Claude Code', client:'在群聊'};
+const MODE = {steer:'插队', queue:'排队', start:''};
+let state = {route:'auto', status:{}, live:{}};
+
+/* ---------- markdown (small, safe: escapes everything first) ---------- */
+function esc(s){return s.replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
+function inline(s){
+  s = esc(s);
+  const codes=[]; s = s.replace(/`([^`\n]+)`/g,(m,c)=>{codes.push(c);return '\u0000'+(codes.length-1)+'\u0000'});
+  const IMG=/\.(png|jpe?g|gif|webp|bmp|svg)$/i, pic=(u,t)=>`<img class="pic" data-src="${u}" alt="${t}" title="${t}">`;
+  s = s.replace(/!\[([^\]\n]*)\]\(<?([^)>\n]+?)>?\)/g,(m,t,u)=>pic(u,t));
+  s = s.replace(/\[([^\]\n]+)\]\(<?([^)>\s]+)>?\)/g,(m,t,u)=>IMG.test(u)?pic(u,t):`<a href="${u}" title="${u}">${t}</a>`);
+  s = s.replace(/\*\*([^*\n]+)\*\*/g,'<strong>$1</strong>').replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g,'$1<em>$2</em>');
+  return s.replace(/\u0000(\d+)\u0000/g,(m,i)=>`<code>${codes[+i]}</code>`);
+}
+function md(src){
+  const lines = src.replace(/\r/g,'').split('\n'); let out=[], i=0;
+  const isTable = k => /^\s*\|.*\|\s*$/.test(lines[k]||'') && /^\s*\|?\s*:?-{2,}/.test(lines[k+1]||'');
+  while(i<lines.length){
+    let l = lines[i];
+    if(/^\s*```/.test(l)){let buf=[];i++;while(i<lines.length&&!/^\s*```/.test(lines[i]))buf.push(lines[i++]);i++;out.push(`<pre><code>${esc(buf.join('\n'))}</code></pre>`);continue}
+    if(isTable(i)){const row=r=>r.trim().replace(/^\||\|$/g,'').split('|').map(c=>c.trim());
+      const h=row(lines[i]);i+=2;let body=[];while(i<lines.length&&/^\s*\|.*\|\s*$/.test(lines[i]))body.push(row(lines[i++]));
+      out.push('<table><thead><tr>'+h.map(c=>`<th>${inline(c)}</th>`).join('')+'</tr></thead><tbody>'+body.map(r=>'<tr>'+r.map(c=>`<td>${inline(c)}</td>`).join('')+'</tr>').join('')+'</tbody></table>');continue}
+    let m;
+    if(m=l.match(/^(#{1,6})\s+(.*)/)){const n=Math.min(4,m[1].length);out.push(`<h${n}>${inline(m[2])}</h${n}>`);i++;continue}
+    if(/^\s*(-{3,}|\*{3,})\s*$/.test(l)){out.push('<hr>');i++;continue}
+    if(/^\s*>/.test(l)){let buf=[];while(i<lines.length&&/^\s*>/.test(lines[i]))buf.push(lines[i++].replace(/^\s*>\s?/,''));out.push(`<blockquote>${md(buf.join('\n'))}</blockquote>`);continue}
+    if(/^\s*([-*]|\d+\.)\s+/.test(l)){const ordered=/^\s*\d+\./.test(l);let items=[];
+      while(i<lines.length&&(/^\s*([-*]|\d+\.)\s+/.test(lines[i])||(/^\s{2,}\S/.test(lines[i])&&items.length))){
+        if(/^\s*([-*]|\d+\.)\s+/.test(lines[i]))items.push(lines[i].replace(/^\s*([-*]|\d+\.)\s+/,''));else items[items.length-1]+='\n'+lines[i].trim();i++}
+      out.push((ordered?'<ol>':'<ul>')+items.map(t=>`<li>${inline(t).replace(/\n/g,'<br>')}</li>`).join('')+(ordered?'</ol>':'</ul>'));continue}
+    if(!l.trim()){i++;continue}
+    let buf=[];while(i<lines.length&&lines[i].trim()&&!/^\s*(```|#{1,6}\s|>|([-*]|\d+\.)\s+)/.test(lines[i])&&!isTable(i))buf.push(lines[i++]);
+    out.push(`<p>${buf.map(inline).join('<br>')}</p>`);
+  }
+  return out.join('');
+}
+
+/* ---------- images: local files come through the backend as data URIs ---------- */
+const picCache={};
+function hydrate(root){
+  root.querySelectorAll('img.pic:not([src])').forEach(async img=>{
+    const u=img.dataset.src;
+    if(/^(https?:|data:)/.test(u)){img.src=u; return}
+    if(!(u in picCache))picCache[u]=api()?api().image(u):Promise.resolve(null);
+    const d=await picCache[u]; if(d)img.src=d; else img.replaceWith(Object.assign(document.createElement('code'),{textContent:u}));
+  });
+}
+document.addEventListener('click',e=>{const img=e.target.closest('img.pic'); if(img&&api())api().open_file(img.dataset.src)});
+
+document.addEventListener('click',async e=>{const b=e.target.closest('[data-stop]'); if(!b||!api())return;
+  b.disabled=true; b.textContent='停止中…'; const r=await api().stop(b.dataset.stop);
+  if(r&&r.error){state.connNote=r.error; renderStatus()} });
+
+/* ---------- rendering ---------- */
+const logEl = $('#log'), inner = $('#log-inner');
+function nearBottom(){return logEl.scrollHeight-logEl.scrollTop-logEl.clientHeight<80}
+function stick(was){if(was)logEl.scrollTop=logEl.scrollHeight}
+function msgEl(who, headHtml, bodyHtml, extra=''){
+  const d=document.createElement('div'); d.className=`msg ${who} ${extra}`;
+  d.innerHTML=`<div class="head">${headHtml}</div><div class="bubble ${who==='user'?'':'md'}">${bodyHtml}</div>`; return d;
+}
+function addLines(lines){
+  // controller 工具记录只写进房间供模型下一轮读取，不在客户端显示。
+  lines=lines.filter(e=>e.kind!=='tool_summary');
+  const was=nearBottom(); if(lines.length)inner.querySelectorAll('.empty').forEach(x=>x.remove());
+  for(const e of lines){
+    if(e.from!=='user') removeLive(e.from);
+    const when=(e.ts||'').slice(11,16);
+    let head=`<span class="who">${NAMES[e.from]||e.from}</span><span>${when}</span>`;
+    if(e.from==='user'){
+      const w=WHERE[e.via]; if(w&&e.via!=='client')head=`<span>${w}</span>`+head;
+      if(e.to&&e.to.length){head=`<span>→ ${e.to.map(t=>NAMES[t]||t).join('、')}</span>`+(e.mode&&MODE[e.mode]?`<span class="tag ${e.mode}">${MODE[e.mode]}</span>`:'')+head}
+    }
+    const body = e.from==='user' ? esc(e.text) : md(e.text);
+    inner.appendChild(msgEl(e.from, head, body));
+  }
+  hydrate(inner); stick(was);
+}
+function liveEl(who){
+  if(state.live[who])return state.live[who];
+  const empty=inner.querySelector('.empty'); if(empty)empty.remove();
+  const d=msgEl(who,`<span class="who">${NAMES[who]}</span><span class="note"><span class="dot"></span> 正在回答</span><button class="stop" data-stop="${who}">停止</button>`,'','live');
+  d.querySelector('.bubble').insertAdjacentHTML('afterend','<div class="activity"></div>');
+  inner.appendChild(d); state.live[who]={el:d,text:''}; return state.live[who];
+}
+function removeLive(who){const l=state.live[who]; if(l){l.el.remove(); delete state.live[who]}}
+function renderStatus(){
+  for(const who of ['claude','gpt']){
+    const s=state.status[who]||{}; const el=$('#state-'+who);
+    el.className='state '+(!s.ready?'off':s.busy?'busy':'idle');
+    let t=!s.ready?(s.error?'出错':'未连接'):s.busy?'回答中':'空闲';
+    if(s.queued)t+=` · 排队 ${s.queued}`;
+    el.querySelector('span').textContent=t; el.title=s.error||'';
+    const sb=$('#stop-'+who); sb.hidden=!s.busy; if(!s.busy){sb.disabled=false; sb.textContent='停止'}
+    const q=s.quota, box=$('#quota-'+who);
+    if(q&&q.remaining!=null){box.innerHTML=`周额度剩余 <b>${q.remaining}%</b>${q.resets?` · ${q.resets} 重置`:''}<div class="bar"><span style="width:${q.remaining}%"></span></div>${q.note?`<span>${q.note}</span>`:''}`}
+    else box.textContent='周额度：'+(q&&q.note?q.note:'读取中…');
+    if(s.access)box.insertAdjacentHTML('beforeend',`<div style="margin-top:6px">权限：${esc(s.access)}</div>`);
+  }
+  $('#conn').textContent=state.connNote||'';
+  updateHint();
+}
+function predict(text){
+  const s=state.status, busy=w=>!!(s[w]&&s[w].busy);
+  let t=null; if(/@(gpt|codex)\b/i.test(text))t='gpt'; else if(/@claude\b/i.test(text))t='claude';
+  if(!t)t=state.route!=='auto'?state.route:(busy('claude')&&!busy('gpt'))?'gpt':(busy('gpt')&&!busy('claude'))?'claude':(busy('claude')&&busy('gpt'))?'gpt':'claude';
+  const mode=busy(t)?'插进它当前这一轮':'直接回答';
+  return `发给 <b>${NAMES[t]}</b>（${mode}）`;
+}
+function updateHint(){$('#route-hint').innerHTML=predict($('#input').value)}
+function fillSelect(sel, options, value){
+  sel.innerHTML=options.map(o=>`<option value="${esc(o.id)}">${esc(o.label||o.id)}</option>`).join('');
+  if(value)sel.value=value;
+}
+
+/* ---------- bridge to Python (window.gc.* is called from the backend) ---------- */
+window.gc = {
+  lines: addLines,
+  delta(who, text, reset){const l=liveEl(who); const was=nearBottom(); if(reset)l.text=''; l.text+=text; l.el.querySelector('.bubble').innerHTML=md(l.text)||'<span style="color:var(--muted)">…</span>'; hydrate(l.el); stick(was)},
+  activity(who, label){const l=liveEl(who); l.el.querySelector('.activity').textContent=label||''},
+  liveEnd(who, stopped){
+    const l=state.live[who]; if(!l)return;
+    if(stopped){ /* keep what was said so far, marked; it was not recorded in the shared channel */
+      if(!l.el.querySelector('.bubble').textContent.trim()){removeLive(who); return}
+      l.el.classList.remove('live'); l.el.classList.add('stopped');
+      l.el.querySelector('.head').innerHTML=`<span class="who">${NAMES[who]}</span><span class="note">已停止 · 这段未完成的回答没有记进共享对话</span>`;
+      l.el.querySelector('.activity').textContent=''; delete state.live[who]; return}
+    /* the final line replaces the live bubble; if none arrives, drop it after a while */
+    setTimeout(()=>{const x=state.live[who]; if(x&&!x.el.querySelector('.bubble').textContent.trim())removeLive(who)},4000)},
+  status(s){Object.assign(state.status, s.models||{}); if(s.conn!=null)state.connNote=s.conn; renderStatus()},
+  options(o){ for(const who of ['claude','gpt']){const m=o[who]; if(!m)continue;
+      fillSelect($('#model-'+who), m.models, m.model); fillSelect($('#effort-'+who), m.efforts, m.effort);} },
+  reset(){inner.innerHTML='<div class="empty">还没有消息</div>'; state.live={}},
+};
+const api = () => window.pywebview && window.pywebview.api;
+
+$('#route').addEventListener('click', e=>{const b=e.target.closest('button'); if(!b)return;
+  state.route=b.dataset.route; for(const x of $('#route').children)x.setAttribute('aria-pressed', x===b);
+  api()&&api().set_route(state.route); updateHint()});
+const input=$('#input');
+function autosize(){input.style.height='auto'; input.style.height=Math.min(220,input.scrollHeight+2)+'px'}
+input.addEventListener('input',()=>{autosize(); updateHint()});
+input.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.isComposing){e.preventDefault(); send()}});
+$('#send').addEventListener('click',send);
+async function send(){const t=input.value.trim(); if(!t)return; input.value=''; autosize(); updateHint();
+  if(api()){const r=await api().send(t, state.route); if(r&&r.error){state.connNote=r.error; renderStatus()}
+    else if(r&&r.mode==='steer')freezeLive(r.target)}}
+/* a steer splits the speaker's answer: what it wrote so far stays as its own paragraph above the user's words,
+   the rest of the answer continues in a new bubble below them */
+function freezeLive(who){
+  const l=state.live[who]; if(!l)return;
+  if(!l.el.querySelector('.bubble').textContent.trim()){removeLive(who); return}
+  l.el.classList.remove('live');
+  l.el.querySelector('.head').innerHTML=`<span class="who">${NAMES[who]}</span><span class="note">插话之前</span>`;
+  l.el.querySelector('.activity').textContent=''; delete state.live[who];
+}
+for(const who of ['claude','gpt']){
+  const ch=()=>api()&&api().set_model(who, $('#model-'+who).value, $('#effort-'+who).value);
+  $('#model-'+who).addEventListener('change',ch); $('#effort-'+who).addEventListener('change',ch);
+}
+/* ---------- conversations (projects → group chats) ---------- */
+function convHtml(r, archived){
+  return `<div class="conv${r.id===state.room?' active':''}${archived?' archived':''}" data-id="${esc(r.id)}"><span class="t">${esc(r.title)}</span><span class="w">${esc(r.when)}</span>`+
+    `<span class="acts">`+(archived?'':`<button class="act" data-rename="${esc(r.id)}" title="给这个群聊改名">改名</button>`)+
+    `<button class="act" data-${archived?'restore':'archive'}="${esc(r.id)}" title="${archived?'恢复到列表':'归档这个群聊（不删除，可恢复）'}">${archived?'恢复':'归档'}</button></span></div>`;
+}
+function renderNav(tree){
+  state.tree=tree;
+  const arch=[]; tree.forEach(p=>p.rooms.filter(r=>r.archived).forEach(r=>arch.push({...r,title:r.title+' · '+p.name})));
+  $('#nav').innerHTML=tree.map(p=>{const open=p.rooms.filter(r=>!r.archived);
+    return `<div class="proj"><div class="proj-head"><span>${esc(p.name)}</span>`+
+      (p.root?`<button data-new="${esc(p.id)}" title="在这个项目里开一个新群聊">＋</button>`:'')+`</div>`+
+      (open.length?open.map(r=>convHtml(r,false)).join(''):'<div class="nav-empty">还没有群聊</div>')+`</div>`}).join('')+
+    (arch.length?`<div class="arch-head" id="arch-toggle">${state.showArch?'▾':'▸'} 已归档（${arch.length}）</div>`+
+      (state.showArch?arch.sort((a,b)=>b.at-a.at).map(r=>convHtml(r,true)).join(''):''):'');
+}
+function show(r){
+  if(r.error){state.connNote=r.error; renderStatus(); return}
+  if(r.keep){renderNav(r.tree); return}
+  gc.reset(); state.room=r.room; $('#title').textContent=r.title; renderNav(r.tree);
+  gc.options(r.options); gc.lines(r.lines); gc.status(r.status); input.focus();
+}
+$('#nav').addEventListener('click',async e=>{
+  if(e.target.closest('#arch-toggle')){state.showArch=!state.showArch; renderNav(state.tree); return}
+  const rn=e.target.closest('[data-rename]'); if(rn){e.stopPropagation(); const c=rn.closest('.conv'); editable(c.querySelector('.t'), rn.dataset.rename, c); return}
+  const ab=e.target.closest('[data-archive]'); if(ab&&api()){e.stopPropagation(); show(await api().archive_room(ab.dataset.archive, true)); return}
+  const rb=e.target.closest('[data-restore]'); if(rb&&api()){e.stopPropagation(); show(await api().archive_room(rb.dataset.restore, false)); return}
+  if(e.target.closest('.conv.archived'))return;
+  const nb=e.target.closest('[data-new]'); if(nb&&api()){show(await api().new_room(nb.dataset.new)); return}
+  const c=e.target.closest('.conv'); if(c&&c.dataset.id!==state.room&&api()&&!c.querySelector('[contenteditable=true]'))show(await api().switch_room(c.dataset.id));
+});
+function editable(el, id, row){
+  if(el.isContentEditable)return;
+  const before=el.textContent; row&&row.classList.add('editing');
+  el.contentEditable='true'; el.focus(); document.getSelection().selectAllChildren(el);
+  const done=async ok=>{el.contentEditable='false'; el.onkeydown=el.onblur=null; row&&row.classList.remove('editing');
+    if(!ok||!el.textContent.trim()||el.textContent===before){el.textContent=before; return}
+    if(api()){const r=await api().rename_room(id, el.textContent); if(r&&!r.error){renderNav(r.tree); if(id===state.room)$('#title').textContent=r.title} else el.textContent=before}};
+  el.onkeydown=ev=>{if(ev.key==='Enter'){ev.preventDefault(); done(true)} if(ev.key==='Escape')done(false)};
+  el.onblur=()=>done(true);
+}
+$('#nav').addEventListener('dblclick',e=>{const c=e.target.closest('.conv:not(.archived)'); if(c)editable(c.querySelector('.t'), c.dataset.id, c)});
+$('#title').addEventListener('dblclick',()=>editable($('#title'), state.room));
+$('#rename-title').addEventListener('click',()=>editable($('#title'), state.room));
+setInterval(async()=>{if(api()&&!document.querySelector('[contenteditable=true]'))renderNav(await api().tree())}, 30000);
+
+async function boot(){
+  gc.reset();
+  if(!api()){ return mock() }
+  show(await api().init());
+}
+window.addEventListener('pywebviewready', boot);
+setTimeout(()=>{if(!window.pywebview)boot()}, 1500);  // opened outside the app: sample data for layout checks
+
+/* ---------- sample data, only when opened outside the app (for checking the layout) ---------- */
+function mock(){
+  state.room='demo-project'; $('#title').textContent='demo-project';
+  state.showArch=true;
+  renderNav([{id:'p1',name:'demo-project',root:'x',rooms:[{id:'demo-project',title:'demo-project',when:'09-23 03:40'},{id:'demo-project · 实验',title:'demo-project · 实验',when:'09-23 01:14',archived:true}]},
+             {id:'p2',name:'paper-notes',root:'y',rooms:[]},{id:'p3',name:'game-prototype',root:'z',rooms:[]}]);
+  gc.options({claude:{models:[{id:'claude-opus-5-5',label:'Opus 5.5'}],model:'claude-opus-5-5',efforts:[{id:'medium',label:'medium'},{id:'high',label:'high'}],effort:'medium'},
+              gpt:{models:[{id:'gpt-6-astra',label:'GPT-6 Astra'}],model:'gpt-6-astra',efforts:[{id:'high',label:'high'}],effort:'high'}});
+  gc.lines([
+    {from:'user',via:'client',to:['claude'],mode:'start',ts:'2026-09-23T03:02:00',text:'先给我一个用得舒服的聊天窗口，流式输出要做好。'},
+    {from:'claude',via:'claude-code',ts:'2026-09-23T03:02:40',text:'好。我先定三件事：\n\n1. **路由**：默认交给 Claude；我在忙时交给 GPT。\n2. **流式**：两边都边生成边显示。\n3. **样式**：沿用 PI 的配色。\n\n| 情况 | 交给 | 方式 |\n|---|---|---|\n| 都空闲 | Claude | 直接回答 |\n| Claude 在忙 | GPT | 直接回答 |\n| GPT 在忙，@gpt | GPT | 插队 |\n\n代码在 `app/app.py`。'},
+    {from:'user',via:'client',to:['gpt'],mode:'steer',ts:'2026-09-23T03:03:10',text:'@gpt 顺便看看界面配色'},
+    {from:'gpt',via:'codex',ts:'2026-09-23T03:03:30',text:'配色整体可以。两种回答的底色区分**轻而清楚**，不抢内容。\n\n> 建议保留用户消息靠右。'},
+  ]);
+  gc.delta('claude','正在写路由逻辑：当 GPT 在忙、你又写了 `@gpt` 时，这句话会通过 `turn/steer` 插进它的当前这一轮……');
+  gc.activity('claude','正在使用工具：Edit');
+  gc.status({models:{claude:{ready:true,busy:true,queued:1,quota:{remaining:64,resets:'周四 03:00'}},gpt:{ready:true,busy:false,quota:{remaining:81,resets:'周五 18:20'}}},conn:''});
+}
+</script>
+</body>
+</html>

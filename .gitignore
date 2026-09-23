@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+# runtime state lives in ~/.claude/codex-bridge, never in the repo
+rooms/
+bindings.json*
+pending-index.json*
+projects-cache.json
+app-prefs.json
+client-prefs.json
+hook-errors.log
+*.lock
