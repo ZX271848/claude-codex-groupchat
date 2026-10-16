@@ -1,14 +1,15 @@
 """One-time setup on a new machine (Windows).
 
-  python install.py            install: dependency, hooks for both sides, desktop shortcut
+  python install.py            install the group-chat client: pywebview and a desktop shortcut "群聊"
   python install.py --check    only report what is found and what is missing
+  python install.py --legacy   also set up the first client (app/), which relays through hooks in both harnesses
 
+The current client (app2/) hosts Claude Code, Codex and, if present, the Antigravity CLI itself and needs no hooks.
 What it does, nothing more:
   1. pip-installs pywebview (the window) into this Python.
-  2. Adds three hooks (SessionStart / UserPromptSubmit / Stop) to ~/.claude/settings.json and
-     ~/.codex/hooks.json, pointing at this folder. Existing hooks are kept; running it twice adds nothing twice.
-  3. Puts a "群聊" shortcut on the desktop.
-Codex runs a new hook only after you trust it: open Codex (CLI: type /hooks) and trust the three groupchat hooks.
+  2. Puts a "群聊" shortcut on the desktop.
+  3. Only with --legacy: adds three hooks (SessionStart / UserPromptSubmit / Stop) to ~/.claude/settings.json and
+     ~/.codex/hooks.json for the first client, keeping existing hooks, and a "群聊（第一版）" shortcut.
 """
 import ctypes, glob, json, os, shutil, subprocess, sys
 
@@ -24,10 +25,10 @@ def short(path):
     return (buf.value if n else path).replace("\\", "/")
 
 
-def find(label, patterns):
+def find(label, patterns, optional=""):
     hits = [p for pat in patterns for p in glob.glob(pat)]
     path = max(hits, key=os.path.getmtime) if hits else None
-    print(f"  {'✓' if path else '✗'} {label}: {path or '没找到'}")
+    print(f"  {'√' if path else ('-' if optional else '×')} {label}: {path or ('没找到' + optional)}")
     return path
 
 
@@ -48,34 +49,38 @@ def merge_hooks(path, script, extra=None):
         added += 1
     os.makedirs(os.path.dirname(path), exist_ok=True)
     json.dump(cfg, open(path, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
-    print(f"  ✓ {path}：新增 {added} 个 hook" + ("（已有的保持不变）" if added < 3 else ""))
+    print(f"  √ {path}：新增 {added} 个 hook" + ("（已有的保持不变）" if added < 3 else ""))
 
 
-def shortcut():
+def shortcut(name, folder, icon):
     pyw = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
-    ps = ("$d=[Environment]::GetFolderPath('Desktop'); $s=(New-Object -ComObject WScript.Shell).CreateShortcut(\"$d\\群聊.lnk\"); "
-          f"$s.TargetPath='{pyw}'; $s.Arguments='\"{os.path.join(HERE, 'app', 'app.py')}\"'; "
-          f"$s.WorkingDirectory='{os.path.join(HERE, 'app')}'; $s.IconLocation='{os.path.join(HERE, 'app', 'groupchat.ico')},0'; $s.Save()")
+    target = os.path.join(HERE, folder)
+    ps = (f"$d=[Environment]::GetFolderPath('Desktop'); $s=(New-Object -ComObject WScript.Shell).CreateShortcut(\"$d\\{name}.lnk\"); "
+          f"$s.TargetPath='{pyw}'; $s.Arguments='\"{os.path.join(target, 'app.py')}\"'; "
+          f"$s.WorkingDirectory='{target}'; $s.IconLocation='{os.path.join(target, icon)},0'; $s.Save()")
     subprocess.run(["powershell", "-NoProfile", "-Command", ps], check=True)
-    print("  ✓ 桌面快捷方式：群聊")
+    print(f"  √ 桌面快捷方式：{name}")
 
 
 def main():
-    check = "--check" in sys.argv
+    sys.stdout.reconfigure(errors="replace")  # Chinese Windows consoles are GBK: never fail on a symbol
+    check, legacy = "--check" in sys.argv, "--legacy" in sys.argv
     if sys.version_info < (3, 11):
         sys.exit("需要 Python 3.11 或更新版本")
     local, roaming = os.environ.get("LOCALAPPDATA", ""), os.environ.get("APPDATA", "")
-    print("查找两边的程序：")
+    print("查找各方的程序：")
     claude = find("Claude Code（Claude 桌面端自带）", [
         os.path.join(local, "Packages", "Claude_*", "LocalCache", "Roaming", "Claude", "claude-code", "*", "claude.exe"),
         os.path.join(roaming, "Claude", "claude-code", "*", "claude.exe"), os.path.join(HOME, ".local", "bin", "claude.exe")])
     codex = find("Codex（Codex 桌面端自带）", [os.path.join(local, "OpenAI", "Codex", "bin", "*", "codex.exe")])
+    find("Antigravity CLI（Gemini 成员用）", [os.path.join(local, "agy", "bin", "agy.exe")],
+         optional="（可选；需要 Gemini 时安装，见 README）")
     try:
         import webview  # noqa: F401
-        print("  ✓ pywebview 已安装")
+        print("  √ pywebview 已安装")
         need_webview = False
     except ImportError:
-        print("  ✗ pywebview 未安装")
+        print("  × pywebview 未安装")
         need_webview = True
     if check:
         return
@@ -84,10 +89,13 @@ def main():
     print("安装：")
     if need_webview:
         subprocess.run([sys.executable, "-m", "pip", "install", "pywebview"], check=True)
-    merge_hooks(os.path.join(HOME, ".claude", "settings.json"), os.path.join(HERE, "hook.py"))
-    merge_hooks(os.path.join(HOME, ".codex", "hooks.json"), os.path.join(HERE, "codex_hook.py"), {"additionalContextLimit": 0})
-    shortcut()
-    print("\n最后一步：打开 Codex，在 hooks 设置里（CLI 输入 /hooks）信任 groupchat 的三个 hook。然后双击桌面的「群聊」。")
+    shortcut("群聊", "app2", "groupchat2.ico")
+    if legacy:
+        merge_hooks(os.path.join(HOME, ".claude", "settings.json"), os.path.join(HERE, "hook.py"))
+        merge_hooks(os.path.join(HOME, ".codex", "hooks.json"), os.path.join(HERE, "codex_hook.py"), {"additionalContextLimit": 0})
+        shortcut("群聊（第一版）", "app", "groupchat.ico")
+        print("\n第一版还需要一步：打开 Codex，在 hooks 设置里（CLI 输入 /hooks）信任 groupchat 的三个 hook。")
+    print("\n双击桌面的「群聊」打开。")
 
 
 if __name__ == "__main__":

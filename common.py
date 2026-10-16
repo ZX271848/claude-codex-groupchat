@@ -33,21 +33,22 @@ PROJECTS_CACHE = os.path.join(BRIDGE_DIR, "projects-cache.json")
 MENTION = {
     "gpt": re.compile(r"@(gpt|codex)\b", re.I),
     "claude": re.compile(r"@claude\b", re.I),
+    "gemini": re.compile(r"@gemini\b", re.I),
     "all": re.compile(r"@(all|所有人|大家)", re.I),
 }
-LABEL = {"user": "用户", "claude": "Claude", "gpt": "GPT"}
+LABEL = {"user": "用户", "claude": "Claude", "gpt": "GPT", "gemini": "Gemini"}
 
 
 def mentions(text, who):
     return bool(MENTION[who].search(text or "") or MENTION["all"].search(text or ""))
 
 
-AI_NAME = {"claude": "Claude", "gpt": "GPT"}
+AI_NAME = {"claude": "Claude", "gpt": "GPT", "gemini": "Gemini"}
 
 
 def _neutralize(text):
     """An AI's words must not be able to close their own label or pose as another speaker."""
-    text = re.sub(r"<(/?)(Claude|GPT|controller)(?=\s*(发言|工具记录|>))", "＜\\1\\2", text, flags=re.I)
+    text = re.sub(r"<(/?)(Claude|GPT|Gemini|controller)(?=\s*(发言|工具记录|>|·))", "＜\\1\\2", text, flags=re.I)
     return text.replace("【用户", "〔用户")
 
 
@@ -71,9 +72,9 @@ def fmt_plain(e):
     if e.get("kind") == "tool_summary":
         return "<controller>\n" + _neutralize(e["text"]) + "\n</controller>"
     if e["from"] in AI_NAME:
-        name = AI_NAME[e["from"]]
+        name = AI_NAME[e["from"]] + (f" · {e['role']}" if e.get("role") else "")  # front / work / working (new client)
         return f"<{name}>\n{_neutralize(e['text'])}\n</{name}>"
-    to = "、".join(AI_NAME.get(t, t) for t in e.get("to") or ())
+    to ="、".join(AI_NAME.get(t, t) for t in e.get("to") or ())
     return f"【用户{' → ' + to if to else ''}】{e['text']}"
 
 

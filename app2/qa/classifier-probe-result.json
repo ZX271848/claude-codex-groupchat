@@ -1,0 +1,25 @@
+{
+  "model": "claude-opus-5-5",
+  "effort": "low",
+  "checks": [
+    {
+      "expected": "both",
+      "actual": "both",
+      "seconds": 2.63,
+      "metered_usd": 0.006188,
+      "input_tokens_including_cache": 767,
+      "output_tokens": 3
+    },
+    {
+      "expected": "claude",
+      "actual": "claude",
+      "seconds": 2.726,
+      "metered_usd": 0.006208,
+      "input_tokens_including_cache": 767,
+      "output_tokens": 4
+    }
+  ],
+  "total_metered_usd": 0.012396,
+  "tools": false,
+  "persistent_session": false
+}

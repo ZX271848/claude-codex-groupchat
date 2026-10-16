@@ -1,0 +1,591 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>群聊</title>
+<style>
+:root{
+  --bg:#f3f6f7;--panel:#fff;--ink:#243c42;--muted:#6b8085;--line:#dbe4e6;--accent:#285d53;
+  --user:#eaf1fb;--user-line:#d3e0f3;--user-ink:#294b78;
+  --claude:#fbf5ef;--claude-line:#eddccb;--claude-ink:#9a5a32;
+  --gpt:#eff7f3;--gpt-line:#d3e8de;--gpt-ink:#23735a;
+  --gemini:#f4effc;--gemini-line:#e0d4f3;--gemini-ink:#6b4ca8;
+  --code:#f4f7f7;
+  font:14px/1.6 "Segoe UI","Microsoft YaHei UI","Microsoft YaHei",sans-serif;color:var(--ink);background:var(--bg);
+}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{display:flex;flex-direction:column;overflow:hidden}
+button,select,textarea{font:inherit;color:inherit}
+select{background:var(--panel);border:1px solid var(--line);border-radius:7px;padding:5px 8px;width:100%}
+select:focus,textarea:focus{outline:2px solid #9cc2b8;outline-offset:0}
+
+/* top bar */
+.topbar{display:flex;align-items:center;gap:14px;padding:10px 20px;background:var(--panel);border-bottom:1px solid var(--line);flex-shrink:0}
+.brand{font-weight:600;font-size:17px}
+.brand small{font-weight:400;font-size:12px;color:var(--muted);margin-left:8px}
+.topbar select{width:auto;min-width:150px}
+.topbar .spacer{flex:1}
+.conn{font-size:12px;color:var(--muted)}
+
+/* layout */
+.main{flex:1;min-height:0;display:grid;grid-template-columns:250px minmax(0,1fr) 300px}
+.nav{background:#fafbfb;border-right:1px solid var(--line);overflow-y:auto;padding:12px 10px}
+.proj{margin-bottom:14px}
+.proj-head{display:flex;align-items:center;justify-content:space-between;padding:4px 6px;font-size:12px;color:var(--muted);font-weight:600}
+.proj-head button{border:0;background:none;cursor:pointer;color:var(--muted);font-size:16px;line-height:1;padding:0 4px;border-radius:5px}
+.proj-head button:hover{background:#e9f0ee;color:var(--accent)}
+.conv{display:flex;flex-direction:column;padding:6px 10px;border-radius:8px;cursor:pointer;margin:1px 0}
+.conv:hover{background:#eef3f2}
+.conv.active{background:#e3efeb}
+.conv .t{font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.conv.active .t{color:var(--accent);font-weight:600}
+.conv .w{font-size:11px;color:var(--muted)}
+.conv .t[contenteditable=true]{outline:1px solid #9cc2b8;background:#fff;border-radius:4px;padding:0 3px;text-overflow:clip}
+.conv{position:relative}
+.conv .acts{position:absolute;right:6px;top:50%;transform:translateY(-50%);display:none;gap:4px}
+.conv:hover .acts{display:flex}
+.conv.editing .acts{display:none}
+.act{border:1px solid var(--line);background:#fff;border-radius:6px;font-size:11px;padding:1px 7px;cursor:pointer;color:var(--muted)}
+.act:hover{color:var(--accent);border-color:#9cc2b8}
+.conv:hover .t{padding-right:84px}
+.conv.archived:hover .t{padding-right:44px}
+.title-row{display:flex;align-items:center;gap:8px}
+.arch-head{display:flex;align-items:center;gap:6px;padding:6px;font-size:12px;color:var(--muted);cursor:pointer;border-top:1px solid var(--line);margin-top:6px;user-select:none}
+.arch-head:hover{color:var(--accent)}
+.conv.archived .t{color:var(--muted)}
+.conv.working .t::after{content:'';display:inline-block;width:7px;height:7px;border-radius:50%;background:#e0a44d;margin-left:6px;vertical-align:middle;animation:pulse 1.2s ease-in-out infinite}
+.nav-empty{font-size:12px;color:var(--muted);padding:2px 10px 6px}
+.title{font-size:15px;font-weight:600;color:var(--ink)}
+.chat{min-width:0;min-height:0;display:flex;flex-direction:column}
+.log{flex:1;min-height:0;overflow-y:auto;padding:22px 28px 10px;scroll-behavior:smooth}
+.log-inner{max-width:880px;margin:0 auto;display:flex;flex-direction:column;gap:14px}
+.side{background:var(--panel);border-left:1px solid var(--line);overflow-y:auto;padding:16px}
+
+/* messages */
+.msg{display:flex;flex-direction:column;max-width:88%}
+.msg .head{font-size:12px;color:var(--muted);margin:0 4px 4px;display:flex;gap:8px;align-items:baseline}
+.msg .who{font-weight:600}
+.bubble{border:1px solid var(--line);border-radius:12px;padding:10px 14px;background:var(--panel);overflow-wrap:anywhere;min-width:0}
+.msg.user{align-self:flex-end}
+.msg.user .head{justify-content:flex-end}
+.msg.user .who{color:var(--user-ink)}
+.msg.user .bubble{background:var(--user);border-color:var(--user-line);border-top-right-radius:4px;white-space:pre-wrap}
+.msg.claude{align-self:flex-start}
+.msg.claude .who{color:var(--claude-ink)}
+.msg.claude .bubble{background:var(--claude);border-color:var(--claude-line);border-top-left-radius:4px}
+.msg.gpt{align-self:flex-start}
+.msg.gpt .who{color:var(--gpt-ink)}
+.msg.gpt .bubble{background:var(--gpt);border-color:var(--gpt-line);border-top-left-radius:4px}
+.msg.gemini{align-self:flex-start}
+.msg.gemini .who{color:var(--gemini-ink)}
+.msg.gemini .bubble{background:var(--gemini);border-color:var(--gemini-line);border-top-left-radius:4px}
+.tag{font-size:11px;padding:0 6px;border-radius:4px;border:1px solid var(--line);color:var(--muted);background:#fff}
+.tag.steer{border-color:#e7c9a4;color:#8a5a1d;background:#fff8ee}
+.tag.queue{border-color:#c9d6e8;color:#3d5f8f;background:#f5f8fd}
+.live .bubble{border-style:dashed}
+.live .dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:currentColor;animation:pulse 1.2s ease-in-out infinite;margin-right:2px}
+@keyframes pulse{0%,100%{opacity:.25}50%{opacity:1}}
+.activity{font-size:12px;color:var(--muted);margin-top:6px}
+.stop{border:1px solid #e6c3b3;background:#fff6f2;color:#a2482a;border-radius:6px;font-size:11px;padding:0 8px;cursor:pointer;line-height:18px}
+.stop:hover{background:#fde9e1}
+.msg.stopped .bubble{border-style:solid;opacity:.85}
+.msg.stopped .note{font-size:11px;color:#a2482a}
+.msg.working .bubble{background:#fff;border-style:dashed;font-size:13px}
+.msg.working .who{opacity:.8}
+.empty{color:var(--muted);text-align:center;padding:60px 0;font-size:13px}
+
+/* markdown */
+.md>:first-child{margin-top:0}.md>:last-child{margin-bottom:0}
+.md p{margin:.45em 0}
+.md h1,.md h2,.md h3,.md h4{margin:.8em 0 .35em;line-height:1.35}
+.md h1{font-size:18px}.md h2{font-size:16px}.md h3,.md h4{font-size:14.5px}
+.md ul,.md ol{margin:.4em 0;padding-left:1.4em}
+.md li{margin:.15em 0}
+.md code{font:12.5px/1.5 Consolas,"Microsoft YaHei",monospace;background:#ffffffb0;border:1px solid #0000000d;border-radius:4px;padding:0 4px}
+.md pre{background:var(--code);border:1px solid var(--line);border-radius:8px;padding:10px 12px;overflow-x:auto;margin:.6em 0}
+.md pre code{background:none;border:0;padding:0;white-space:pre}
+.md blockquote{margin:.5em 0;padding:.1em 0 .1em 12px;border-left:3px solid var(--line);color:#4c6469}
+.md table{border-collapse:collapse;margin:.6em 0;font-size:13px;display:block;overflow-x:auto}
+.md th,.md td{border:1px solid var(--line);padding:5px 9px;text-align:left;vertical-align:top}
+.md th{background:#ffffff90;font-weight:600}
+.md a{color:var(--accent)}
+.md img.pic{display:block;max-width:100%;max-height:440px;border-radius:8px;border:1px solid var(--line);margin:.5em 0;cursor:zoom-in;background:#fff;min-height:40px;min-width:60px}
+.attach-row{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px}
+.attach-row[hidden]{display:none}
+.attach-row .chip{position:relative;width:64px;height:64px;border:1px solid var(--line);border-radius:8px;overflow:hidden;background:#fff}
+.attach-row .chip img{width:100%;height:100%;object-fit:cover}
+.attach-row .chip button{position:absolute;top:2px;right:2px;width:18px;height:18px;border:0;border-radius:9px;background:#0009;color:#fff;font-size:12px;line-height:18px;padding:0;cursor:pointer}
+.attach{border:1px solid var(--line);border-radius:10px;background:var(--panel);color:var(--muted);height:46px;padding:0 12px;cursor:pointer;flex-shrink:0}
+.attach:hover{color:var(--accent);border-color:var(--accent)}
+.msg.user .bubble img.pic{display:block;max-width:100%;max-height:320px;border-radius:8px;border:1px solid var(--line);margin:.4em 0 0;cursor:zoom-in;background:#fff;min-height:40px;min-width:60px}
+.path{cursor:pointer;text-decoration:underline dotted;text-underline-offset:2px}
+.path:hover{color:var(--accent)}
+.toast{position:fixed;left:50%;bottom:130px;transform:translateX(-50%);background:#1f2d2b;color:#fff;padding:8px 14px;border-radius:8px;font-size:13px;opacity:0;transition:opacity .2s;pointer-events:none;z-index:50;max-width:70vw}
+.toast.on{opacity:.93}
+.divider{text-align:center;color:var(--muted);font-size:12px;margin:22px auto;max-width:640px;padding:8px 14px;border-top:1px dashed var(--line);border-bottom:1px dashed var(--line)}
+.md hr{border:0;border-top:1px solid var(--line);margin:.8em 0}
+
+/* composer */
+.composer{flex-shrink:0;background:var(--panel);border-top:1px solid var(--line);padding:10px 28px 14px}
+.composer-inner{max-width:880px;margin:0 auto}
+.route-row{display:flex;align-items:center;gap:10px;margin-bottom:8px;font-size:12px;color:var(--muted)}
+.seg{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.seg button{border:0;background:var(--panel);padding:4px 12px;cursor:pointer;font-size:12px;color:var(--muted)}
+.seg button+button{border-left:1px solid var(--line)}
+.seg button[aria-pressed=true]{background:#e9f3ef;color:var(--accent);font-weight:600}
+.route-hint b{color:var(--ink);font-weight:600}
+.input-row{display:flex;gap:10px;align-items:flex-end}
+textarea{flex:1;resize:none;min-height:46px;max-height:220px;border:1px solid var(--line);border-radius:10px;padding:10px 12px;background:#fbfcfc;line-height:1.55}
+.send{border:0;border-radius:10px;background:var(--accent);color:#fff;padding:0 20px;height:46px;cursor:pointer;font-weight:600}
+.send:hover{background:#214f46}
+
+/* side cards */
+.card{border:1px solid var(--line);border-radius:10px;padding:12px 13px;margin-bottom:14px}
+.card.gpt{background:linear-gradient(#f4faf7,#fff 60px)}
+.card.claude{background:linear-gradient(#fdf8f3,#fff 60px)}
+.card.gemini{background:linear-gradient(#f8f4fd,#fff 60px)}
+.card-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px}
+.card-head b{font-size:15px}
+.card.gpt .card-head b{color:var(--gpt-ink)}
+.card.claude .card-head b{color:var(--claude-ink)}
+.card.gemini .card-head b{color:var(--gemini-ink)}
+.state{font-size:12px;color:var(--muted);display:flex;align-items:center;gap:5px}
+.state i{width:8px;height:8px;border-radius:50%;background:#b8c6c9;display:inline-block}
+.state.busy i{background:#e0a44d;animation:pulse 1.2s infinite}
+.state.idle i{background:#3aa17e}
+.state.off i{background:#c9d2d4}
+.field{margin-bottom:9px}
+.field label{display:block;font-size:12px;color:var(--muted);margin-bottom:3px}
+.quota{margin-top:10px;font-size:12px;color:var(--muted)}
+.bar{height:6px;border-radius:3px;background:#e8eeef;overflow:hidden;margin:4px 0 3px}
+.bar span{display:block;height:100%;border-radius:3px;background:#5fae94}
+.card.claude .bar span{background:#d59a6c}
+.card.gemini .bar span{background:#a48bd3}
+.side h3{font-size:12px;color:var(--muted);font-weight:500;margin:4px 0 10px}
+.rules{font-size:12px;color:var(--muted);line-height:1.75;border-top:1px solid var(--line);padding-top:12px}
+.rules b{color:var(--ink);font-weight:600}
+</style>
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">群聊<small>Coordinator</small></div>
+  <div class="title-row"><div class="title" id="title" title="双击改名"></div><button class="act" id="rename-title" title="给当前群聊改名">改名</button></div>
+  <div class="spacer"></div>
+  <div class="conn" id="conn"></div>
+</header>
+<div class="main">
+  <nav class="nav" id="nav"></nav>
+  <section class="chat">
+    <div class="log" id="log"><div class="log-inner" id="log-inner"></div></div>
+    <div class="composer">
+      <div class="composer-inner">
+        <div class="route-row">
+          <div class="seg" id="route">
+            <button data-route="auto" aria-pressed="true">自动</button>
+            <button data-route="claude" aria-pressed="false">Claude</button>
+            <button data-route="gpt" aria-pressed="false">GPT</button>
+            <button data-route="gemini" aria-pressed="false" hidden>Gemini</button>
+            <button data-route="both" aria-pressed="false">双方</button>
+            <button data-route="all" aria-pressed="false" hidden>全体</button>
+          </div>
+          <span class="route-hint" id="route-hint"></span>
+        </div>
+        <div class="attach-row" id="attach-row" hidden></div>
+        <div class="input-row">
+          <button class="attach" id="attach" title="附图片（也可以直接粘贴，或拖进窗口）">图片</button>
+          <input type="file" id="file" accept="image/*" multiple hidden>
+          <textarea id="input" rows="1" placeholder="说点什么… Enter 发送，Shift+Enter 换行；写 @gpt / @claude / @gemini 可临时指定"></textarea>
+          <button class="send" id="send">发送</button>
+        </div>
+      </div>
+    </div>
+  </section>
+  <aside class="side">
+    <h3>模型</h3>
+    <div class="card claude" id="card-claude">
+      <div class="card-head"><b>Claude</b><span style="display:flex;gap:8px;align-items:center"><button class="stop" data-stop="claude" id="stop-claude" hidden>停止</button><span class="state off" id="state-claude"><i></i><span>未连接</span></span></span></div>
+      <div class="field"><label>型号</label><select id="model-claude"></select></div>
+      <div class="field"><label>思考强度</label><select id="effort-claude"></select></div>
+      <div class="quota" id="quota-claude">周额度：读取中…</div>
+    </div>
+    <div class="card gpt" id="card-gpt">
+      <div class="card-head"><b>GPT</b><span style="display:flex;gap:8px;align-items:center"><button class="stop" data-stop="gpt" id="stop-gpt" hidden>停止</button><span class="state off" id="state-gpt"><i></i><span>未连接</span></span></span></div>
+      <div class="field"><label>型号</label><select id="model-gpt"></select></div>
+      <div class="field"><label>思考强度</label><select id="effort-gpt"></select></div>
+      <div class="quota" id="quota-gpt">周额度：读取中…</div>
+    </div>
+    <div class="card gemini" id="card-gemini" hidden>
+      <div class="card-head"><b>Gemini</b><span style="display:flex;gap:8px;align-items:center"><button class="stop" data-stop="gemini" id="stop-gemini" hidden>停止</button><span class="state off" id="state-gemini"><i></i><span>未连接</span></span></span></div>
+      <div class="field"><label>型号</label><select id="model-gemini"></select></div>
+      <div class="field"><label>思考强度</label><select id="effort-gemini"></select></div>
+      <div class="quota" id="quota-gemini">额度：读取中…</div>
+    </div>
+    <div class="rules">
+      <label for="collaboration-mode"><b>递送模式</b></label>
+      <select id="collaboration-mode" aria-label="递送模式">
+        <option value="normal">普通 · 只递送选中者</option>
+        <option value="collaboration">协同 · 插队共享</option>
+      </select>
+      <p><b>分类器</b>：Opus 5.5 · low，仅看聊天，静默选人。指定对象时直接递送。</p>
+      <p><b>双方</b>：GPT 先答，Claude 读后再答，不自动开启协同。</p>
+      <p id="setup-note" hidden></p>
+      <p id="rule-all" hidden><b>全体</b>：GPT、Claude、Gemini 依次回答，后答者读到前面的回答。Gemini 工作中时，发给它的消息排在它这一轮之后（反重力不支持中途插话）。</p>
+      <p>你的新消息默认插队；未选中的模型下次调用再读未读历史。协同模式允许模型互相 @，内部笔记不逐条显示。</p>
+      <details id="dispatch-history" hidden>
+        <summary id="dispatch-summary">历史中断 / 失败</summary>
+        <p>这些是以前的请求记录，不代表当前连接状态。已回答或已续接的消息无需重新递送。</p>
+        <div id="dispatch-retries"></div>
+      </details>
+    </div>
+  </aside>
+</div>
+<script>
+const $ = s => document.querySelector(s);
+const NAMES = {user:'你', claude:'Claude', gpt:'GPT', gemini:'Gemini'};
+const ALL = ['claude','gpt','gemini'];
+const ROLE = {front:'历史前台', work:'', working:'内部记录'};
+const whoOf = k => String(k).split(':')[0];
+const laneOf = e => e.from + ':' + (e.role==='front' ? 'front' : 'work');
+const laneLabel = k => NAMES[whoOf(k)] + (ROLE[String(k).split(':')[1]] ? ' · ' + ROLE[String(k).split(':')[1]] : '');
+const WHERE = {codex:'在 Codex', 'claude-code':'在 Claude Code', client:'在群聊'};
+const MODE = {steer:'插队', queue:'排队', start:''};
+let state = {route:'auto', status:{}, live:{}, members:['gpt','claude']};
+
+/* ---------- markdown (small, safe: escapes everything first) ---------- */
+function esc(s){return s.replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
+function retryMarkup(j){
+  const label=j.status==='interrupted'
+    ? ({user_stop:'已停止',client_restart:'客户端重开后未确认完成'}[j.interruption]||'已中断')
+    : '该次请求失败';
+  const seqs=(j.seqs||[]).map(n=>String(n)).join('、');
+  const error=j.status==='failed'&&j.error ? `<br>${esc(String(j.error))}` : '';
+  return `<p>${esc(NAMES[j.model]||'分类器')} · 消息 ${esc(seqs)} · ${label}${error} <button data-retry="${esc(j.id)}">重新递送</button></p>`;
+}
+function inline(s){
+  s = esc(s);
+  const codes=[]; s = s.replace(/`([^`\n]+)`/g,(m,c)=>{codes.push(c);return '\u0000'+(codes.length-1)+'\u0000'});
+  const IMG=/\.(png|jpe?g|gif|webp|bmp|svg)$/i, pic=(u,t)=>`<img class="pic" data-src="${u}" alt="${t}" title="${t}">`;
+  s = s.replace(/!\[([^\]\n]*)\]\(<?([^)>\n]+?)>?\)/g,(m,t,u)=>pic(u,t));
+  s = s.replace(/\[([^\]\n]+)\]\(<?([^)>\s]+)>?\)/g,(m,t,u)=>IMG.test(u)?pic(u,t):`<a href="${u}" title="${u}">${t}</a>`);
+  s = linkPaths(s);
+  s = s.replace(/\*\*([^*\n]+)\*\*/g,'<strong>$1</strong>').replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g,'$1<em>$2</em>');
+  return s.replace(/\u0000(\d+)\u0000/g,(m,i)=>looksPath(codes[+i])?`<code class="path" data-path="${codes[+i]}" title="点击打开">${codes[+i]}</code>`:`<code>${codes[+i]}</code>`);
+}
+const BARE=/(?:[A-Za-z]:[\\/]|\\\\(?=[\w.$-])|~[\\/])[^\s<>"'|*?`，。；：？、（）「」『』【】]+/g;
+function linkPaths(s){ /* bare absolute paths in escaped text, outside tags */
+  return s.split(/(<[^>]*>)/).map(seg=>seg.startsWith('<')?seg:seg.replace(BARE,m=>{
+    const tail=(m.match(/(&[a-z]+;|[.,;:!)\]])+$/)||[''])[0], p=m.slice(0,m.length-tail.length);
+    return `<span class="path" data-path="${p}" title="点击打开">${p}</span>`+tail})).join('');
+}
+function looksPath(c){ /* a code span that names a file or folder: absolute, or relative with a folder and an extension */
+  return /^([A-Za-z]:[\\/]|\\\\\S|~[\\/]|\/[a-zA-Z]\/)/.test(c) || /^[^\s:*?"<>|]+[\\/][^\s:*?"<>|]*\.[A-Za-z0-9]{1,8}(:\d+(:\d+)?)?$/.test(c);
+}
+document.addEventListener('click',e=>{
+  const a=e.target.closest('a[href]');
+  if(a){e.preventDefault(); if(api())api().open_url(a.getAttribute('href')).then(r=>{if(r&&r.error)toast(r.error)}); return}
+  const p=e.target.closest('[data-path]');
+  if(p&&api())api().open_file(p.dataset.path).then(r=>{if(r&&r.error)toast(r.error)});
+});
+function md(src){
+  const lines = src.replace(/\r/g,'').split('\n'); let out=[], i=0;
+  const isTable = k => /^\s*\|.*\|\s*$/.test(lines[k]||'') && /^\s*\|?\s*:?-{2,}/.test(lines[k+1]||'');
+  while(i<lines.length){
+    let l = lines[i];
+    if(/^\s*```/.test(l)){let buf=[];i++;while(i<lines.length&&!/^\s*```/.test(lines[i]))buf.push(lines[i++]);i++;out.push(`<pre><code>${esc(buf.join('\n'))}</code></pre>`);continue}
+    if(isTable(i)){const row=r=>r.trim().replace(/^\||\|$/g,'').split('|').map(c=>c.trim());
+      const h=row(lines[i]);i+=2;let body=[];while(i<lines.length&&/^\s*\|.*\|\s*$/.test(lines[i]))body.push(row(lines[i++]));
+      out.push('<table><thead><tr>'+h.map(c=>`<th>${inline(c)}</th>`).join('')+'</tr></thead><tbody>'+body.map(r=>'<tr>'+r.map(c=>`<td>${inline(c)}</td>`).join('')+'</tr>').join('')+'</tbody></table>');continue}
+    let m;
+    if(m=l.match(/^(#{1,6})\s+(.*)/)){const n=Math.min(4,m[1].length);out.push(`<h${n}>${inline(m[2])}</h${n}>`);i++;continue}
+    if(/^\s*(-{3,}|\*{3,})\s*$/.test(l)){out.push('<hr>');i++;continue}
+    if(/^\s*>/.test(l)){let buf=[];while(i<lines.length&&/^\s*>/.test(lines[i]))buf.push(lines[i++].replace(/^\s*>\s?/,''));out.push(`<blockquote>${md(buf.join('\n'))}</blockquote>`);continue}
+    if(/^\s*([-*]|\d+\.)\s+/.test(l)){const ordered=/^\s*\d+\./.test(l);let items=[];
+      while(i<lines.length&&(/^\s*([-*]|\d+\.)\s+/.test(lines[i])||(/^\s{2,}\S/.test(lines[i])&&items.length))){
+        if(/^\s*([-*]|\d+\.)\s+/.test(lines[i]))items.push(lines[i].replace(/^\s*([-*]|\d+\.)\s+/,''));else items[items.length-1]+='\n'+lines[i].trim();i++}
+      out.push((ordered?'<ol>':'<ul>')+items.map(t=>`<li>${inline(t).replace(/\n/g,'<br>')}</li>`).join('')+(ordered?'</ol>':'</ul>'));continue}
+    if(!l.trim()){i++;continue}
+    let buf=[];while(i<lines.length&&lines[i].trim()&&!/^\s*(```|#{1,6}\s|>|([-*]|\d+\.)\s+)/.test(lines[i])&&!isTable(i))buf.push(lines[i++]);
+    out.push(`<p>${buf.map(inline).join('<br>')}</p>`);
+  }
+  return out.join('');
+}
+
+/* ---------- images: local files come through the backend as data URIs ---------- */
+const picCache={};
+function hydrate(root){
+  root.querySelectorAll('img.pic:not([src])').forEach(async img=>{
+    const u=img.dataset.src;
+    if(/^(https?:|data:)/.test(u)){img.src=u; return}
+    if(!(u in picCache))picCache[u]=api()?api().image(u):Promise.resolve(null);
+    const d=await picCache[u]; if(d)img.src=d; else img.replaceWith(Object.assign(document.createElement('code'),{textContent:u}));
+  });
+}
+document.addEventListener('click',e=>{const img=e.target.closest('img.pic'); if(img&&api())api().open_file(img.dataset.src)});
+
+document.addEventListener('click',async e=>{const b=e.target.closest('[data-stop]'); if(!b||!api())return;
+  b.disabled=true; b.textContent='停止中…'; const r=await api().stop(b.dataset.stop);
+  if(r&&r.error){state.connNote=r.error; renderStatus()} });
+
+/* ---------- rendering ---------- */
+const logEl = $('#log'), inner = $('#log-inner');
+function nearBottom(){return logEl.scrollHeight-logEl.scrollTop-logEl.clientHeight<80}
+function stick(was){if(was)logEl.scrollTop=logEl.scrollHeight}
+function msgEl(who, headHtml, bodyHtml, extra=''){
+  const d=document.createElement('div'); d.className=`msg ${who} ${extra}`;
+  d.innerHTML=`<div class="head">${headHtml}</div><div class="bubble ${who==='user'?'':'md'}">${bodyHtml}</div>`; return d;
+}
+function addLines(lines){
+  // controller 工具记录只写进房间供模型下一轮读取，不在客户端显示。
+  lines=lines.filter(e=>e.kind!=='tool_summary'&&e.kind!=='routing'&&e.role!=='working'&&e.visibility!=='internal'&&!(e.from!=='user'&&/^\s*交给工作\s*[:：]/.test(e.text||'')));
+  const was=nearBottom(); if(lines.length)inner.querySelectorAll('.empty').forEach(x=>x.remove());
+  for(const e of lines){
+    if(e.kind==='divider'){inner.insertBefore(Object.assign(document.createElement('div'),{className:'divider',textContent:e.text}),inner.querySelector('.msg.live')); continue}
+    if(e.from!=='user') removeLive(laneOf(e));
+    const when=(e.ts||'').slice(11,16);
+    let head=`<span class="who">${NAMES[e.from]||e.from}${ROLE[e.role]?' · '+ROLE[e.role]:''}${e.kind==='progress'?' · 进展':''}</span><span>${when}</span>`;
+    if(e.from==='user'){
+      const w=WHERE[e.via]; if(w&&e.via!=='client')head=`<span>${w}</span>`+head;
+      if(e.to&&e.to.length){head=`<span>→ ${e.to.map(t=>NAMES[t]||t).join('、')}</span>`+(e.mode&&MODE[e.mode]?`<span class="tag ${e.mode}">${MODE[e.mode]}</span>`:'')+head}
+    }
+    const body = (e.from==='user' ? linkPaths(esc(e.text)) : md(e.text)) + (e.images||[]).map(p=>`<img class="pic" data-src="${esc(p)}" title="${esc(p)}">`).join('');
+    inner.insertBefore(msgEl(e.from, head, body, e.role==='working'?'working':''), inner.querySelector('.msg.live'));
+  }
+  hydrate(inner); stick(was);
+}
+function liveEl(who){
+  if(state.live[who])return state.live[who];
+  const empty=inner.querySelector('.empty'); if(empty)empty.remove();
+  const d=msgEl(whoOf(who),`<span class="who">${laneLabel(who)}</span><span class="note"><span class="dot"></span> 正在写</span><button class="stop" data-stop="${who}">停止</button>`,'','live');
+  d.querySelector('.bubble').insertAdjacentHTML('afterend','<div class="activity"></div>');
+  inner.appendChild(d); state.live[who]={el:d,text:''}; return state.live[who];
+}
+function removeLive(who){const l=state.live[who]; if(l){l.el.remove(); delete state.live[who]}}
+function renderStatus(){
+  for(const [key] of Object.entries(state.live)){const [model,role]=key.split(':'); if(state.status[model]?.lanes?.[role]==='idle')removeLive(key)}
+  for(const who of ALL){
+    if(!state.members.includes(who))continue;
+    const s=state.status[who]||{}; const el=$('#state-'+who);
+    el.className='state '+(!s.ready?'off':s.busy?'busy':'idle');
+    let t=!s.ready?(s.error?'出错':'未连接'):(s.label||(s.busy?'回答中':'空闲'));
+    if(s.queued)t+=` · 排队 ${s.queued}`;
+    el.querySelector('span').textContent=t; el.title=s.error||'';
+    const sb=$('#stop-'+who); sb.hidden=!s.busy; if(!s.busy){sb.disabled=false; sb.textContent='停止'}
+    const q=s.quota, box=$('#quota-'+who);
+    if(q&&q.remaining!=null){box.innerHTML=`周额度剩余 <b>${q.remaining}%</b>${q.resets?` · ${q.resets} 重置`:''}<div class="bar"><span style="width:${q.remaining}%"></span></div>${q.note?`<span>${q.note}</span>`:''}`}
+    else box.textContent=(who==='gemini'?'额度：':'周额度：')+(q&&q.note?q.note:'读取中…');
+    if(s.access)box.insertAdjacentHTML('beforeend',`<div style="margin-top:6px">权限：${esc(s.access)}</div>`);
+  }
+  $('#conn').textContent=state.connNote||'';
+  updateHint();
+}
+function predict(text){
+  const ms=state.members, said=m=>(m==='gpt'?/@(gpt|codex)\b/i:new RegExp('@'+m+'\\b','i')).test(text);
+  const named=['gpt','claude','gemini'].filter(m=>ms.includes(m)&&said(m));
+  const target=named.length===2&&named.includes('gpt')&&named.includes('claude')?'both'
+    :named.length>1?(named.length===ms.length?'all':named.join('+')):named[0]||state.route;
+  if(target==='both')return 'GPT 先答，Claude 读后再答';
+  if(target==='all')return ms.map(m=>NAMES[m]).join(' → ')+' 依次回答，后答者读到前面的回答';
+  if(target.includes('+'))return target.split('+').map(m=>NAMES[m]).join(' → ')+' 依次回答';
+  if(target==='gemini')return '直接递送 <b>Gemini</b>；它工作中时排在这一轮之后';
+  if(target==='auto')return 'Opus 5.5 low 静默选人；你的消息默认插队';
+  return `直接递送 <b>${NAMES[target]}</b>；工作中则插队`;
+}
+function updateHint(){$('#route-hint').innerHTML=predict($('#input').value)}
+function fillSelect(sel, options, value){
+  sel.innerHTML=options.map(o=>`<option value="${esc(o.id)}">${esc(o.label||o.id)}</option>`).join('');
+  if(value)sel.value=value;
+}
+
+/* ---------- bridge to Python (window.gc.* is called from the backend) ---------- */
+window.gc = {
+  lines: addLines,
+  delta(who, text, reset){const l=liveEl(who); const was=nearBottom(); if(reset)l.text=''; l.text+=text; l.el.querySelector('.bubble').innerHTML=md(l.text)||'<span style="color:var(--muted)">…</span>'; hydrate(l.el); stick(was)},
+  activity(who, label){const l=liveEl(who); l.el.querySelector('.activity').textContent=label||''},
+  liveEnd(who, stopped){
+    const l=state.live[who]; if(!l)return;
+    if(stopped){ /* keep what was said so far, marked; it was not recorded in the shared channel */
+      if(!l.el.querySelector('.bubble').textContent.trim()){removeLive(who); return}
+      l.el.classList.remove('live'); l.el.classList.add('stopped');
+      l.el.querySelector('.head').innerHTML=`<span class="who">${laneLabel(who)}</span><span class="note">已停止 · 这段未完成的回答没有记进共享对话</span>`;
+      l.el.querySelector('.activity').textContent=''; delete state.live[who]; return}
+    removeLive(who)},
+  status(s){Object.assign(state.status, s.models||{}); if(s.conn!=null)state.connNote=s.conn;
+    if(s.mode){state.mode=s.mode; const mode=$('#collaboration-mode'); if(mode){mode.value=s.mode; mode.disabled=false}}
+    const retries=$('#dispatch-retries'); if(retries&&s.retry){
+      retries.innerHTML=s.retry.map(retryMarkup).join('');
+      $('#dispatch-history').hidden=!s.retry.length;
+      $('#dispatch-summary').textContent=`历史中断 / 失败（${s.retry.length}）`;
+    }
+    renderStatus();
+    if(s.busyRooms){state.busyRooms=s.busyRooms; markBusy()}},
+  options(o){ for(const who of ALL){const m=o[who]; if(!m)continue;
+      fillSelect($('#model-'+who), m.models, m.model); fillSelect($('#effort-'+who), m.efforts, m.effort);} },
+  reset(){inner.innerHTML='<div class="empty">还没有消息</div>'; state.live={}},
+};
+const api = () => window.pywebview && window.pywebview.api;
+
+$('#collaboration-mode').addEventListener('change',async e=>{
+  const mode=e.target.value; e.target.disabled=true;
+  if(api()){const r=await api().set_mode(mode); if(r&&r.error){toast(r.error);e.target.disabled=false}}
+  else {state.mode=mode;e.target.disabled=false}
+});
+document.addEventListener('click',e=>{const button=e.target.closest('[data-retry]');if(button&&api())api().retry(button.dataset.retry)});
+
+$('#route').addEventListener('click', e=>{const b=e.target.closest('button'); if(!b)return;
+  state.route=b.dataset.route; for(const x of $('#route').children)x.setAttribute('aria-pressed', x===b);
+  api()&&api().set_route(state.route); updateHint()});
+const input=$('#input');
+function autosize(){input.style.height='auto'; input.style.height=Math.min(220,input.scrollHeight+2)+'px'}
+input.addEventListener('input',()=>{autosize(); updateHint()});
+input.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.isComposing){e.preventDefault(); send()}});
+$('#send').addEventListener('click',send);
+async function send(){const t=input.value.trim(); if(!t&&!state.att.length)return;
+  const imgs=state.att.map(a=>a.path); state.att=[]; renderAtt(); input.value=''; autosize(); updateHint();
+  if(api()){const r=await api().send(t, state.route, imgs); if(r&&r.error){state.connNote=r.error; renderStatus()}
+    else if(r&&r.mode==='steer')freezeLive(r.target)}}
+/* pictures: long side at most 2000 px (what the models can use anyway), then saved by the backend */
+state.att=[];
+function shrink(file){
+  return new Promise(ok=>{const r=new FileReader(); r.onerror=()=>ok(null); r.onload=()=>{
+    const url=r.result, im=new Image(); im.onerror=()=>ok(url); im.onload=()=>{
+      const k=Math.min(1,2000/Math.max(im.width,im.height));
+      if(k===1&&file.size<3.5e6&&/^image\/(png|jpeg)$/.test(file.type))return ok(url);
+      const c=document.createElement('canvas'); c.width=Math.round(im.width*k); c.height=Math.round(im.height*k);
+      c.getContext('2d').drawImage(im,0,0,c.width,c.height);
+      let out=c.toDataURL('image/png'); if(out.length>4.6e6)out=c.toDataURL('image/jpeg',0.9); ok(out)};
+    im.src=url}; r.readAsDataURL(file)});
+}
+async function addFiles(files){
+  for(const f of files){
+    if(!/^image\//.test(f.type)){toast('只能附图片'); continue}
+    const data=await shrink(f); const r=data&&api()?await api().attach(data,f.name||''):null;
+    if(!r||r.error){toast(r&&r.error||'附图失败'); continue}
+    state.att.push({path:r.path,thumb:data});
+  }
+  renderAtt(); input.focus();
+}
+function renderAtt(){const row=$('#attach-row'); row.hidden=!state.att.length;
+  row.innerHTML=state.att.map((a,i)=>`<span class="chip" title="${esc(a.path)}"><img src="${a.thumb}"><button data-unatt="${i}" title="移除">×</button></span>`).join('')}
+document.addEventListener('click',e=>{const b=e.target.closest('[data-unatt]'); if(b){state.att.splice(+b.dataset.unatt,1); renderAtt()}});
+$('#attach').addEventListener('click',()=>$('#file').click());
+$('#file').addEventListener('change',e=>{addFiles([...e.target.files]); e.target.value=''});
+input.addEventListener('paste',e=>{const fs=[...((e.clipboardData&&e.clipboardData.files)||[])].filter(f=>/^image\//.test(f.type)); if(fs.length){e.preventDefault(); addFiles(fs)}});
+document.addEventListener('dragover',e=>{if(e.dataTransfer&&[...e.dataTransfer.types].includes('Files'))e.preventDefault()});
+document.addEventListener('drop',e=>{const fs=[...((e.dataTransfer&&e.dataTransfer.files)||[])]; if(fs.length){e.preventDefault(); addFiles(fs)}});
+function toast(t){let el=$('#toast'); if(!el){el=document.createElement('div'); el.id='toast'; el.className='toast'; document.body.appendChild(el)}
+  el.textContent=t; el.classList.add('on'); clearTimeout(el._t); el._t=setTimeout(()=>el.classList.remove('on'),2600)}
+/* a steer splits the speaker's answer: what it wrote so far stays as its own paragraph above the user's words,
+   the rest of the answer continues in a new bubble below them */
+function freezeLive(who){
+  const l=state.live[who]; if(!l)return;
+  if(!l.el.querySelector('.bubble').textContent.trim()){removeLive(who); return}
+  l.el.classList.remove('live');
+  l.el.querySelector('.head').innerHTML=`<span class="who">${laneLabel(who)}</span><span class="note">插话之前</span>`;
+  l.el.querySelector('.activity').textContent=''; delete state.live[who];
+}
+for(const who of ALL){
+  const ch=()=>api()&&api().set_model(who, $('#model-'+who).value, $('#effort-'+who).value);
+  $('#model-'+who).addEventListener('change',ch); $('#effort-'+who).addEventListener('change',ch);
+}
+/* ---------- conversations (projects → group chats) ---------- */
+function convHtml(r, archived){
+  return `<div class="conv${r.id===state.room?' active':''}${archived?' archived':''}" data-id="${esc(r.id)}"><span class="t">${esc(r.title)}</span><span class="w">${esc(r.when)}</span>`+
+    `<span class="acts">`+(archived?'':`<button class="act" data-rename="${esc(r.id)}" title="给这个群聊改名">改名</button>`)+
+    `<button class="act" data-${archived?'restore':'archive'}="${esc(r.id)}" title="${archived?'恢复到列表':'归档这个群聊（不删除，可恢复）'}">${archived?'恢复':'归档'}</button></span></div>`;
+}
+function renderNav(tree){
+  state.tree=tree;
+  const arch=[]; tree.forEach(p=>p.rooms.filter(r=>r.archived).forEach(r=>arch.push({...r,title:r.title+' · '+p.name})));
+  $('#nav').innerHTML=tree.map(p=>{const open=p.rooms.filter(r=>!r.archived);
+    return `<div class="proj"><div class="proj-head"><span>${esc(p.name)}</span>`+
+      (p.root?`<button data-new="${esc(p.id)}" title="在这个项目里开一个新群聊">＋</button>`:'')+`</div>`+
+      (open.length?open.map(r=>convHtml(r,false)).join(''):'<div class="nav-empty">还没有群聊</div>')+`</div>`}).join('')+
+    (arch.length?`<div class="arch-head" id="arch-toggle">${state.showArch?'▾':'▸'} 已归档（${arch.length}）</div>`+
+      (state.showArch?arch.sort((a,b)=>b.at-a.at).map(r=>convHtml(r,true)).join(''):''):'');
+  markBusy();
+}
+/* programs the client could not find on this machine: what is missing and where the guide is */
+function showSetup(setup){
+  const miss=Object.values(setup).filter(x=>x&&!x.found).map(x=>esc(x.note));
+  const el=$('#setup-note'); el.hidden=!miss.length; el.innerHTML=miss.map(t=>'⚠ '+t).join('<br>');
+}
+/* rooms differ in members: Gemini's card, its route button and 全体 show only where it takes part */
+function applyMembers(ms){
+  state.members=ms; const g=ms.includes('gemini');
+  $('#card-gemini').hidden=!g; $('#rule-all').hidden=!g;
+  for(const b of $('#route').children){
+    if(b.dataset.route==='gemini'||b.dataset.route==='all')b.hidden=!g;
+    if(b.dataset.route==='both')b.hidden=g;
+  }
+  const was=state.route;
+  if(g&&state.route==='both')state.route='all';
+  if(!g&&state.route==='all')state.route='both';
+  if(!g&&state.route==='gemini')state.route='auto';
+  if(state.route!==was&&api())api().set_route(state.route);
+}
+function markBusy(){document.querySelectorAll('.conv').forEach(c=>c.classList.toggle('working',(state.busyRooms||[]).includes(c.dataset.id)))}
+function show(r){
+  if(r.error){state.connNote=r.error; renderStatus(); return}
+  if(r.keep){renderNav(r.tree); return}
+  gc.reset(); state.room=r.room; $('#title').textContent=r.title; renderNav(r.tree);
+  state.route=r.route||'auto'; applyMembers(r.members||['gpt','claude']);
+  for(const b of $('#route').children)b.setAttribute('aria-pressed',b.dataset.route===state.route);
+  gc.options(r.options); gc.lines(r.lines);
+  for(const [who,l] of Object.entries(r.live||{})){ /* an answer still being written in this conversation */
+    gc.delta(who, l.text||'', true); if(l.activity)gc.activity(who, l.activity)}
+  gc.status(r.status); showSetup(r.setup||{}); input.focus();
+}
+$('#nav').addEventListener('click',async e=>{
+  if(e.target.closest('#arch-toggle')){state.showArch=!state.showArch; renderNav(state.tree); return}
+  const rn=e.target.closest('[data-rename]'); if(rn){e.stopPropagation(); const c=rn.closest('.conv'); editable(c.querySelector('.t'), rn.dataset.rename, c); return}
+  const ab=e.target.closest('[data-archive]'); if(ab&&api()){e.stopPropagation(); show(await api().archive_room(ab.dataset.archive, true)); return}
+  const rb=e.target.closest('[data-restore]'); if(rb&&api()){e.stopPropagation(); show(await api().archive_room(rb.dataset.restore, false)); return}
+  if(e.target.closest('.conv.archived'))return;
+  const nb=e.target.closest('[data-new]'); if(nb&&api()){show(await api().new_room(nb.dataset.new)); return}
+  const c=e.target.closest('.conv'); if(c&&c.dataset.id!==state.room&&api()&&!c.querySelector('[contenteditable=true]'))show(await api().switch_room(c.dataset.id));
+});
+function editable(el, id, row){
+  if(el.isContentEditable)return;
+  const before=el.textContent; row&&row.classList.add('editing');
+  el.contentEditable='true'; el.focus(); document.getSelection().selectAllChildren(el);
+  const done=async ok=>{el.contentEditable='false'; el.onkeydown=el.onblur=null; row&&row.classList.remove('editing');
+    if(!ok||!el.textContent.trim()||el.textContent===before){el.textContent=before; return}
+    if(api()){const r=await api().rename_room(id, el.textContent); if(r&&!r.error){renderNav(r.tree); if(id===state.room)$('#title').textContent=r.title} else el.textContent=before}};
+  el.onkeydown=ev=>{if(ev.key==='Enter'){ev.preventDefault(); done(true)} if(ev.key==='Escape')done(false)};
+  el.onblur=()=>done(true);
+}
+$('#nav').addEventListener('dblclick',e=>{const c=e.target.closest('.conv:not(.archived)'); if(c)editable(c.querySelector('.t'), c.dataset.id, c)});
+$('#title').addEventListener('dblclick',()=>editable($('#title'), state.room));
+$('#rename-title').addEventListener('click',()=>editable($('#title'), state.room));
+setInterval(async()=>{if(api()&&!document.querySelector('[contenteditable=true]'))renderNav(await api().tree())}, 30000);
+
+async function boot(){
+  gc.reset();
+  if(!api()){ return mock() }
+  show(await api().init());
+}
+window.addEventListener('pywebviewready', boot);
+setTimeout(()=>{if(!window.pywebview)boot()}, 1500);  // opened outside the app: sample data for layout checks
+
+/* ---------- sample data, only when opened outside the app (for checking the layout) ---------- */
+function mock(){
+  state.room='demo-project'; $('#title').textContent='demo-project';
+  state.showArch=true;
+  renderNav([{id:'p1',name:'demo-project',root:'x',rooms:[{id:'demo-project',title:'demo-project',when:'09-23 03:40'},{id:'demo-project · 实验',title:'demo-project · 实验',when:'09-23 01:14',archived:true}]},
+             {id:'p2',name:'paper-notes',root:'y',rooms:[]},{id:'p3',name:'game-prototype',root:'z',rooms:[]}]);
+  gc.options({claude:{models:[{id:'claude-opus-5-5',label:'Opus 5.5'}],model:'claude-opus-5-5',efforts:[{id:'medium',label:'medium'},{id:'high',label:'high'}],effort:'medium'},
+              gpt:{models:[{id:'gpt-6-astra',label:'GPT-6 Astra'}],model:'gpt-6-astra',efforts:[{id:'high',label:'high'}],effort:'high'}});
+  gc.lines([
+    {from:'user',via:'client',ts:'2026-09-24T18:02:00',text:'你们看看这个设计。'},
+    {from:'gpt',role:'work',via:'client',ts:'2026-09-24T18:02:40',text:'一个静默入口，两份持续的工作经历。分类器选人，工作模型负责理解和执行。'},
+    {from:'claude',role:'work',via:'client',ts:'2026-09-24T18:03:00',text:'补充：双方回答按顺序进行；只有显式开启协同模式，工作笔记才实时共享。'},
+    {from:'user',via:'client',ts:'2026-09-24T18:03:10',text:'@Claude 继续实验，报告阶段进展。'},
+    {from:'claude',role:'work',kind:'progress',via:'client',ts:'2026-09-24T18:03:30',text:'**第 2 轮完成**，实验继续运行；普通技术记录保留在内部。'},
+  ]);
+  gc.status({models:{claude:{ready:true,busy:true,queued:0,lanes:{work:'busy'},quota:{remaining:64,resets:'周四 03:00'}},gpt:{ready:true,busy:false,lanes:{work:'idle'},quota:{remaining:81,resets:'周五 18:20'}}},mode:'normal',retry:[],conn:''});
+}
+</script>
+</body>
+</html>

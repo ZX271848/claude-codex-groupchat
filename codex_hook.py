@@ -72,6 +72,8 @@ def out(event, text):
 
 
 def main():
+    if os.environ.get("GROUPCHAT_OFF") == "1":  # a client that delivers and records by itself
+        return
     cmd = sys.argv[1]
     h = json.loads(sys.stdin.buffer.read().decode("utf-8") or "{}")
     tid = thread_id(h)

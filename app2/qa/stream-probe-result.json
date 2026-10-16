@@ -1,0 +1,191 @@
+{
+  "inserted": true,
+  "events": [
+    {
+      "type": "user",
+      "keys": [
+        "type",
+        "message",
+        "session_id",
+        "parent_tool_use_id",
+        "uuid",
+        "timestamp",
+        "isReplay"
+      ]
+    },
+    {
+      "type": "assistant",
+      "keys": [
+        "type",
+        "message",
+        "parent_tool_use_id",
+        "session_id",
+        "uuid",
+        "timestamp",
+        "request_id"
+      ]
+    },
+    {
+      "type": "result",
+      "keys": [
+        "duration_api_ms",
+        "stop_reason",
+        "session_id",
+        "total_cost_usd",
+        "usage",
+        "modelUsage",
+        "permission_denials",
+        "terminal_reason",
+        "fast_mode_state",
+        "fast_mode_disabled_reason",
+        "subagent_stats",
+        "is_error",
+        "num_turns",
+        "subtype",
+        "api_error_status",
+        "result",
+        "ttft_ms",
+        "type",
+        "duration_ms",
+        "uuid",
+        "ttft_stream_ms",
+        "time_to_request_ms",
+        "first_content_frame_ms",
+        "queued_turn_count",
+        "result_index"
+      ]
+    },
+    {
+      "type": "user",
+      "keys": [
+        "type",
+        "message",
+        "session_id",
+        "parent_tool_use_id",
+        "uuid",
+        "timestamp",
+        "isReplay"
+      ]
+    },
+    {
+      "type": "assistant",
+      "keys": [
+        "type",
+        "message",
+        "parent_tool_use_id",
+        "session_id",
+        "uuid",
+        "timestamp",
+        "request_id"
+      ]
+    },
+    {
+      "type": "result",
+      "keys": [
+        "duration_api_ms",
+        "stop_reason",
+        "session_id",
+        "total_cost_usd",
+        "usage",
+        "modelUsage",
+        "permission_denials",
+        "terminal_reason",
+        "fast_mode_state",
+        "fast_mode_disabled_reason",
+        "subagent_stats",
+        "is_error",
+        "num_turns",
+        "subtype",
+        "api_error_status",
+        "result",
+        "ttft_ms",
+        "type",
+        "duration_ms",
+        "uuid",
+        "ttft_stream_ms",
+        "time_to_request_ms",
+        "first_content_frame_ms",
+        "queued_turn_count",
+        "result_index"
+      ]
+    }
+  ],
+  "results": [
+    {
+      "subtype": "success",
+      "result": "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n13\n14\n15\n16\n17\n18\n19\n20\n21\n22\n23\n24\n25\n26\n27\n28\n29\n30\n31\n32\n33\n34\n35\n36\n37\n38\n39\n40",
+      "total_cost_usd": 0.0035440000000000003,
+      "usage": {
+        "input_tokens": 481,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "output_tokens": 81,
+        "output_tokens_details": {
+          "thinking_tokens": 0
+        },
+        "server_tool_use": {
+          "web_search_requests": 0,
+          "web_fetch_requests": 0
+        },
+        "service_tier": "standard",
+        "cache_creation": {
+          "ephemeral_1h_input_tokens": 0,
+          "ephemeral_5m_input_tokens": 0
+        },
+        "inference_geo": "not_available",
+        "iterations": [
+          {
+            "input_tokens": 481,
+            "output_tokens": 81,
+            "cache_read_input_tokens": 0,
+            "cache_creation_input_tokens": 0,
+            "cache_creation": {
+              "ephemeral_5m_input_tokens": 0,
+              "ephemeral_1h_input_tokens": 0
+            },
+            "type": "message"
+          }
+        ],
+        "speed": "standard"
+      }
+    },
+    {
+      "subtype": "success",
+      "result": "SECOND",
+      "total_cost_usd": 0.008456,
+      "usage": {
+        "input_tokens": 2,
+        "cache_creation_input_tokens": 598,
+        "cache_read_input_tokens": 0,
+        "output_tokens": 6,
+        "output_tokens_details": {
+          "thinking_tokens": 0
+        },
+        "server_tool_use": {
+          "web_search_requests": 0,
+          "web_fetch_requests": 0
+        },
+        "service_tier": "standard",
+        "cache_creation": {
+          "ephemeral_1h_input_tokens": 598,
+          "ephemeral_5m_input_tokens": 0
+        },
+        "inference_geo": "not_available",
+        "iterations": [
+          {
+            "input_tokens": 2,
+            "output_tokens": 6,
+            "cache_read_input_tokens": 0,
+            "cache_creation_input_tokens": 598,
+            "cache_creation": {
+              "ephemeral_5m_input_tokens": 0,
+              "ephemeral_1h_input_tokens": 598
+            },
+            "type": "message"
+          }
+        ],
+        "speed": "standard"
+      }
+    }
+  ]
+}
