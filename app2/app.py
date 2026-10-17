@@ -647,19 +647,52 @@ def gemini_record(work, step):
         work.keep(step, [f"{name} — 工具报告失败"], ["工具输出摘录：" + short(output, 220)])
 
 
+CUT_NOTE = ("（客户端）你上一轮在两次工具调用之间被插话打断：已经做完的步骤都在对话里，没写完的话丢掉了。"
+            "先看下面插进来的消息，再接着做原来的事，做过的步骤不要重做。")
+END_NOTE = "（客户端）你这一轮结束时，下面的消息已经插进来了：先处理它；原来的事如果还没做完，也接着做。"
+
+
+def gemini_quota():
+    """Gemini's weekly and 5-hour limits from `agy -p /usage` (no model call)."""
+    agy = backends.find("agy")
+    if not agy:
+        return None
+    try:
+        out = subprocess.run([agy, "-p", "/usage", "--output-format", "json"], capture_output=True, timeout=90,
+                             creationflags=NO_WINDOW, env=child_env(), cwd=os.path.expanduser("~")).stdout
+        groups = json.loads(out.decode("utf-8", "replace"))["command"]["data"]["groups"]
+    except Exception as ex:
+        log("agy usage", ex)
+        return None
+    group = next((g for g in groups if str(g.get("name", "")).lower().startswith("gemini")), None)
+    if not group:
+        return None
+    buckets = {b.get("window"): b for b in group.get("buckets") or []}
+    week, five = buckets.get("weekly"), buckets.get("5h")
+    if not week:
+        return None
+    pct = lambda b: max(0, min(100, round(float(b.get("remaining_fraction", 0)) * 100)))
+    return {"remaining": pct(week), "resets": A1.when(week.get("reset_time")),
+            "note": f"5 小时额度 {pct(five)}% · {A1.when(five.get('reset_time'))} 重置" if five else None}
+
+
 class GeminiLane(Lane):
-    """One agy process per room, kept between turns; one NDJSON user message per turn.
-    agy runs a message written during a turn as the next turn and has no interrupt request, so steer() declines
-    (the coordinator queues the message until the turn ends) and stop ends the process; the next turn resumes
-    the same conversation by id. Input is text only: pictures go by path."""
+    """One agy process per room, kept between turns; one NDJSON user message per turn. Input is text only: pictures go
+    by path. agy has no interrupt request: stop ends the process and the next turn resumes the conversation by id.
+    Insertion is emulated at a tool boundary: messages that arrive while Gemini works are held until no tool is
+    running, then the turn is ended and the same conversation resumes with them (completed steps stay in it)."""
 
     def __init__(self, room_sess, role):
         super().__init__(room_sess, "gemini", role)
         self.p = None
         self.started_with = None
         self.wlock = threading.Lock()
+        self.plock = threading.Lock()          # pending insertions and the cut decision
         self.idfile = os.path.join(self.room["dir"], f"gemini-{role}.json")
         self.cur, self.since_tool, self.tools, self.work = "", [], set(), None
+        self.running = set()                    # tool steps started and not yet done
+        self.pending = []                       # messages to insert into the running turn
+        self.cutting = None                     # the process ended on purpose to insert messages
 
     @property
     def ready(self):
@@ -701,6 +734,11 @@ class GeminiLane(Lane):
             self.p.stdin.write((json.dumps(obj, ensure_ascii=False) + "\n").encode("utf-8"))
             self.p.stdin.flush()
 
+    @staticmethod
+    def with_images(text, images):
+        missing = [path for path in images if path not in text]
+        return text + ("\n（附图路径，需要看图时用工具打开：" + "；".join(missing) + "）" if missing else "")
+
     def ask(self, text, quiet=False, on_done=None, images=()):
         cfg = self.app.gemini_cfg
         if self.ready and not self.busy and self.started_with != f"{cfg['model']}-{cfg['effort']}":
@@ -711,14 +749,11 @@ class GeminiLane(Lane):
             return False
         if not C.load_json(self.idfile, {}).get("introduced"):
             text = gemini_preamble(self.room) + "\n\n" + text
-        missing = [path for path in images if path not in text]
-        if missing:
-            text += "\n（附图路径，需要看图时用工具打开：" + "；".join(missing) + "）"
         self.quiet, self.on_done, self.stopping, self.error = quiet, on_done, False, None
-        self.cur, self.since_tool, self.tools = "", [], set()
+        self.cur, self.since_tool, self.tools, self.running, self.pending = "", [], set(), set(), []
         self.busy = True
         try:
-            self.write({"event": "user", "message": {"content": text}})
+            self.write({"event": "user", "message": {"content": self.with_images(text, images)}})
         except Exception as exc:
             self.error = "Gemini 消息未送达：" + str(exc)[:160]
             self.finish("", False)
@@ -726,13 +761,52 @@ class GeminiLane(Lane):
         return True
 
     def steer(self, text, images=()):
-        return False  # agy would run it as a separate turn after this one; the coordinator queues it instead
+        """Held until no tool is running; then the turn is cut and resumed with it (see cut / read)."""
+        if not (self.busy and not self.quiet and not self.stopping and (self.ready or self.cutting)):
+            return False
+        with self.plock:
+            self.pending.append(self.with_images(text, images))
+            ready_now = not self.running and bool(self.tools)  # a tool already finished and none is running
+        if ready_now:
+            self.cut()
+        return True
+
+    def cut(self):
+        with self.plock:
+            if self.cutting or not self.pending or self.running or self.stopping or not self.ready:
+                return
+            self.cutting = self.p
+        try:
+            self.cutting.kill()  # read() sees the end of output and resumes the conversation with the pending messages
+        except Exception as ex:
+            log("gemini cut", ex)
+
+    def resume(self):
+        """After a cut: the same conversation, a new process, the held messages as the next user message."""
+        with self.plock:
+            pending, self.pending, self.cutting = self.pending, [], None
+        on_done, quiet = self.on_done, self.quiet
+        if not self.start():
+            self.on_done = on_done
+            self.busy = True
+            self.finish("", False)
+            return
+        self.on_done, self.quiet, self.busy = on_done, quiet, True
+        self.cur, self.since_tool, self.tools, self.running = "", [], set(), set()
+        try:
+            self.write({"event": "user", "message": {"content": CUT_NOTE + "\n\n" + "\n\n".join(pending)}})
+        except Exception as exc:
+            self.error = "Gemini 插话未送达：" + str(exc)[:160]
+            self.finish("", False)
 
     def stop_turn(self):
-        if self.busy and self.ready:
+        if self.busy and (self.ready or self.cutting):
             self.stopping = True
+            with self.plock:
+                self.pending = []
             try:
-                self.p.kill()  # the reader sees the end of output and finishes the turn as stopped
+                if self.p is not None:
+                    self.p.kill()  # the reader sees the end of output and finishes the turn as stopped
             except Exception as ex:
                 log("gemini stop", ex)
             return True
@@ -744,7 +818,7 @@ class GeminiLane(Lane):
             line = raw.decode("utf-8", "replace").strip()
             if line and not re.match(r"^(ERROR: logging before google\.Init: )?I\d{4} ", line):  # glog info lines
                 tail = (tail + [line])[-5:]
-        if p.poll() not in (None, 0) and not self.stopping and tail:
+        if p.poll() not in (None, 0) and self.p is p and not self.stopping and tail:
             self.error = self.error or (" / ".join(tail))[:200]
 
     def text_so_far(self):
@@ -769,12 +843,17 @@ class GeminiLane(Lane):
                     self.result(ev.get("result") or {})
             except Exception as ex:
                 log("gemini read " + self.key, ex)
+        if self.cutting is p and not self.stopping:
+            if self.p is p:
+                self.p = None
+            self.resume()
+            return
         if self.busy and (self.p is p or self.p is None):
             stopped = self.stopping
             if not stopped:
                 self.error = self.error or "Gemini 进程退出"
             self.close_work("interrupted" if stopped else "error")
-            self.stopping = False
+            self.stopping, self.cutting = False, None
             self.finish(self.text_so_far(), stopped)
         if self.p is p:
             self.p = None
@@ -798,6 +877,8 @@ class GeminiLane(Lane):
                 self.since_tool = []
                 if not self.quiet:
                     self.app.activity(self.rid, self.key, f"正在使用工具：{s.get('tool_name') or (s.get('tool_info') or {}).get('name')}")
+            with self.plock:
+                (self.running.discard if state == "DONE" else self.running.add)(index)
             if state == "DONE" and self.role == "work":
                 if self.work is None:
                     self.work = WorkRecord(self.room, "gemini", s.get("conversation_id"))
@@ -805,6 +886,8 @@ class GeminiLane(Lane):
                     gemini_record(self.work, s)
                 except Exception as ex:
                     log("gemini record", ex)
+            if state == "DONE" and self.pending:
+                self.cut()  # a tool boundary: the held messages go in now
 
     def close_work(self, status):
         if self.work is not None:
@@ -814,12 +897,29 @@ class GeminiLane(Lane):
     def result(self, r):
         status = r.get("status") or ""
         stopped = self.stopping
+        final = self.text_so_far()
+        with self.plock:
+            pending = self.pending if status == "SUCCESS" and not stopped and not self.cutting else []
+            if pending:
+                self.pending = []
+        if pending:
+            # The turn ended before a tool boundary: publish its answer, then the held messages as the next turn.
+            self.rs.enqueue("intermediate_complete", model=self.model, text=final)
+            self.cur, self.since_tool, self.tools, self.running = "", [], set(), set()
+            try:
+                self.write({"event": "user", "message": {"content": END_NOTE + "\n\n" + "\n\n".join(pending)}})
+                return
+            except Exception as exc:
+                self.error = "Gemini 插话未送达：" + str(exc)[:160]
+                final = ""
+        if self.cutting:
+            return  # ended on purpose; read() resumes when the process is gone
         if status != "SUCCESS" and not stopped:
             self.error = "Gemini 请求失败：" + str(r.get("error") or status)[:200]
-        final = self.text_so_far()
         self.close_work("interrupted" if stopped else "completed" if status == "SUCCESS" else "error")
-        self.cur, self.since_tool, self.tools, self.stopping = "", [], set(), False
+        self.cur, self.since_tool, self.tools, self.running, self.stopping = "", [], set(), set(), False
         self.finish(final, stopped)
+        threading.Thread(target=self.app.refresh_gemini_quota, daemon=True).start()
 
 
 class RoomSession(Conversation):
@@ -846,6 +946,7 @@ class App:
                            "effort": self.prefs.get("gemini_effort", "high"),
                            "perm": self.prefs.get("gemini_permission", "skip")}
         self.gemini_families = []
+        self.gemini_quota, self.gemini_quota_at = None, 0
         self.claude_quota = None
         self.window = None
         self.last = 0
@@ -936,7 +1037,7 @@ class App:
                 models[model] = {'ready': bool(backends.find('agy')) and not lane.error, 'busy': lane.busy,
                                  'label': '工作中' if lane.busy else '空闲', 'error': lane.error,
                                  'queued': len(s.waiting[model]), 'lanes': {'work': lane.state()},
-                                 'quota': {'note': '反重力没有提供额度查询'},
+                                 'quota': self.gemini_quota or {'note': '读取中…'},
                                  'access': '自动批准所有工具' if self.gemini_cfg.get('perm') == 'skip' else '需确认的工具会被拒绝'}
                 continue
             error = lane.error or (self.gpt['work'].error if model == 'gpt' else None)
@@ -963,6 +1064,14 @@ class App:
     def claude_options(self):
         return {"models": [{"id": m, "label": l} for m, l in A1.CLAUDE_MODELS], "model": self.claude_cfg["model"],
                 "efforts": [{"id": e, "label": e} for e in A1.CLAUDE_EFFORTS], "effort": self.claude_cfg["effort"]}
+
+    def refresh_gemini_quota(self, force=False):
+        if not force and time.time() - self.gemini_quota_at < 60:
+            return
+        self.gemini_quota_at = time.time()
+        quota = gemini_quota()
+        if quota:
+            self.gemini_quota = quota
 
     def gemini_options(self):
         families = self.gemini_families or [(self.gemini_cfg["model"], self.gemini_cfg["model"])]
@@ -1204,6 +1313,7 @@ def main():
         if not backends.find("agy"):
             return
         app.gemini_families = gemini_models()
+        app.refresh_gemini_quota(force=True)
         if app.gemini_families:
             app.js("options", {"gemini": app.gemini_options()})
     threading.Thread(target=load_gemini, daemon=True).start()

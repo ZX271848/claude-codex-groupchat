@@ -113,11 +113,11 @@ python install.py            # 安装 pywebview，在桌面放「群聊」快捷
 python app2\tools\add_member.py "<群聊名>" --from-seq 1200
 ```
 
-**Gemini 和另外两位有什么不同。** 这些是反重力 CLI 本身的限制：
-- Gemini 工作时发给它的消息，要等它这一轮做完才处理（Claude 和 GPT 可以中途插进去）；
+**Gemini 和另外两位有什么不同。** 反重力 CLI 不支持中途插话，也没有中断指令，客户端这样处理：
+- Gemini 工作时发给它的消息，等它手上的工具做完后插进去：客户端结束当前这一轮，带着新消息续上同一个对话，已做完的步骤都在；
 - "停止"会结束它的进程，下次自动续上同一个对话；
 - 图片只能把路径告诉它，由它自己用工具打开；
-- 客户端读不到它的额度。
+- 额度从 `agy -p /usage` 读取，卡片上显示周额度和 5 小时额度。
 
 **权限。** 三位默认都不弹确认：Claude 跳过所有确认；GPT 不请求审批，能访问的范围按你 Codex 的沙盒设置（`~/.codex/config.toml` 的 `sandbox_mode`）；Gemini 自动批准所有工具。只在你信任的项目里使用。Gemini 改成需要确认：在 `%USERPROFILE%\.claude\groupchat2\app-prefs.json` 里写 `"gemini_permission": "ask"`。headless 模式下，需要确认的工具会被直接拒绝。
 

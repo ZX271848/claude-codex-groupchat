@@ -116,10 +116,10 @@ class GeminiRoomTest(unittest.TestCase):
         self.finish('gemini', 'Gemini 的看法')
         self.assertEqual([j['status'] for j in self.s.jobs], ['completed'] * 3)
 
-    def test_busy_gemini_queues_instead_of_inserting(self):
+    def test_declined_insertion_queues_until_the_turn_ends(self):
         self.user('先做第一件事', 'gemini')
         lane = self.s.lane('gemini')
-        lane.insert = False  # GeminiLane.steer declines: agy has no mid-turn insertion
+        lane.insert = False  # a lane that cannot take the message now (e.g. its process is gone) declines
         self.user('再补一句', 'gemini')
         self.assertEqual(len(lane.asks), 1)
         self.assertEqual(len(self.s.waiting['gemini']), 1)
@@ -214,9 +214,11 @@ class GeminiLaneParsingTest(unittest.TestCase):
         self.notes, self.partials, self.done = [], [], []
         rs = SimpleNamespace(room={'dir': self.tmp.name, 'root': self.tmp.name, 'name': 'g'}, app=None,
                              note=lambda m, t: self.notes.append(t), partial=lambda m, t: self.partials.append(t),
-                             enqueue=lambda *a, **k: None)
+                             enqueue=lambda kind, **k: self.enqueued.append((kind, k)))
+        self.enqueued = []
         rs.app = SimpleNamespace(gemini_cfg={'model': 'gemini-3.8-flash', 'effort': 'low', 'perm': 'skip'},
-                                 live_end=lambda *a, **k: None, activity=lambda *a, **k: None)
+                                 live_end=lambda *a, **k: None, activity=lambda *a, **k: None,
+                                 refresh_gemini_quota=lambda *a, **k: None)
         self.lane = A.GeminiLane(rs, 'work')
         self.lane.busy, self.lane.on_done = True, lambda text, stopped: self.done.append((text, stopped))
 
@@ -234,6 +236,63 @@ class GeminiLaneParsingTest(unittest.TestCase):
         self.assertEqual(len(summary), 1)
         self.assertIn('Gemini 工具记录', summary[0]['text'])
         self.assertIn('write_to_file', summary[0]['text'])
+
+    def fake_process(self):
+        lane, written = self.lane, []
+
+        class Proc:
+            def __init__(self):
+                self.killed, self.stdout = False, iter(())
+                self.stdin = SimpleNamespace(write=lambda b: written.append(json.loads(b.decode('utf-8'))), flush=lambda: None)
+            def poll(self): return 0 if self.killed else None
+            def kill(self): self.killed = True
+        lane.p = Proc()
+
+        def start():
+            lane.p, lane.busy = Proc(), False
+            return True
+        lane.start = start
+        return written
+
+    def test_insertion_waits_for_the_running_tool_then_resumes(self):
+        written = self.fake_process()
+        first = self.lane.p
+        for step in AGY_TURN[:5]:  # text, then run_command starts
+            self.lane.step(step)
+        self.assertTrue(self.lane.steer('[消息 9] 【用户】另外建 b.txt'))
+        self.assertFalse(first.killed)  # never cut a running tool
+        self.lane.step(AGY_TURN[5])     # run_command done: a tool boundary
+        self.assertTrue(first.killed)
+        self.lane.read(first)           # its output ends: resume the same conversation with the message
+        self.assertIsNot(self.lane.p, first)
+        self.assertTrue(self.lane.busy)
+        self.assertEqual(self.done, [])
+        self.assertIn('被插话打断', written[-1]['message']['content'])
+        self.assertIn('另外建 b.txt', written[-1]['message']['content'])
+        self.lane.step({'step_index': 9, 'state': 'DONE', 'step_type': 'agent_response', 'text_delta': '都做完了。'})
+        self.lane.result({'status': 'SUCCESS'})
+        self.assertEqual(self.done, [('都做完了。', False)])
+
+    def test_insertion_at_the_end_of_a_turn_without_tools(self):
+        written = self.fake_process()
+        self.lane.step({'step_index': 1, 'state': 'ACTIVE', 'step_type': 'agent_response', 'text_delta': '原来的回答'})
+        self.assertTrue(self.lane.steer('[消息 9] 【用户】补一句'))
+        self.assertFalse(self.lane.p.killed)
+        self.lane.step({'step_index': 1, 'state': 'DONE', 'step_type': 'agent_response', 'text_delta': ''})
+        self.lane.result({'status': 'SUCCESS'})
+        self.assertEqual(self.enqueued, [('intermediate_complete', {'model': 'gemini', 'text': '原来的回答'})])
+        self.assertTrue(self.lane.busy)
+        self.assertEqual(self.done, [])
+        self.assertIn('补一句', written[-1]['message']['content'])
+
+    def test_stop_drops_held_messages(self):
+        self.fake_process()
+        p = self.lane.p
+        self.lane.steer('稍后插入')
+        self.assertTrue(self.lane.stop_turn())
+        self.assertEqual(self.lane.pending, [])
+        self.lane.read(p)
+        self.assertEqual(self.done, [('', True)])
 
     def test_failure_is_reported(self):
         self.lane.result({'status': 'ERROR', 'error': 'quota exhausted'})
