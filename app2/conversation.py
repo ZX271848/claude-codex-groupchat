@@ -102,6 +102,8 @@ class Conversation:
             self.retry(event['id'])
         elif kind == 'stop':
             self.stop_model(event['model'])
+        elif kind == 'notice':  # a transport's remark that belongs after what is already queued (e.g. an answer)
+            self.notice(event['text'])
 
     def notice(self, text):
         return C.append(self.room, 'controller', text, 'client', kind='status')

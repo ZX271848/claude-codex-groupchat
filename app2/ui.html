@@ -231,7 +231,7 @@ textarea{flex:1;resize:none;min-height:46px;max-height:220px;border:1px solid va
       <p><b>分类器</b>：Opus 5.5 · low，仅看聊天，静默选人。指定对象时直接递送。</p>
       <p><b>双方</b>：GPT 先答，Claude 读后再答，不自动开启协同。</p>
       <p id="setup-note" hidden></p>
-      <p id="rule-all" hidden><b>全体</b>：GPT、Claude、Gemini 依次回答，后答者读到前面的回答。Gemini 工作中时，插话在它手上的工具做完后插进去。</p>
+      <p id="rule-all" hidden><b>全体</b>：GPT、Claude、Gemini 依次回答，后答者读到前面的回答。Gemini 工作中时，发给它的消息排在它这一轮之后（反重力不支持中途插话）。</p>
       <p>你的新消息默认插队；未选中的模型下次调用再读未读历史。协同模式允许模型互相 @，内部笔记不逐条显示。</p>
       <details id="dispatch-history" hidden>
         <summary id="dispatch-summary">历史中断 / 失败</summary>
@@ -388,7 +388,7 @@ function predict(text){
   if(target==='both')return 'GPT 先答，Claude 读后再答';
   if(target==='all')return ms.map(m=>NAMES[m]).join(' → ')+' 依次回答，后答者读到前面的回答';
   if(target.includes('+'))return target.split('+').map(m=>NAMES[m]).join(' → ')+' 依次回答';
-  if(target==='gemini')return '直接递送 <b>Gemini</b>；工作中则在它手上的工具做完后插队';
+  if(target==='gemini')return '直接递送 <b>Gemini</b>；它工作中时排在这一轮之后';
   if(target==='auto')return 'Opus 5.5 low 静默选人；你的消息默认插队';
   return `直接递送 <b>${NAMES[target]}</b>；工作中则插队`;
 }
