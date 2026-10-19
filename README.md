@@ -10,6 +10,8 @@ python3 install.py          # 自动创建项目 .venv、安装窗口依赖、�
 
 Mac 上关闭窗口或按 ⌘Q 会退出并关闭模型进程；缩到 Dock 请用黄色最小化按钮。应用依赖这个代码目录和 `.venv`，移动目录后请重新运行安装器。
 
+**iPhone 主屏幕网页版：** 在 Mac 右上角点「连接手机」→「开启连接」，Mac 与 iPhone 在 Tailscale 登录同一账号并连接后，用 Safari 打开显示的私有 HTTPS 地址并输入配对码，再「分享 → 添加到主屏幕」。电脑和手机共用会话和项目。见 [手机使用说明](docs/MOBILE.md)。
+
 一个 Windows / macOS 桌面客户端：你、Claude（Claude Code）、GPT（Codex）、Gemini（Google Antigravity CLI）在同一个群聊里。三个模型都在各自的官方程序里运行，保留各自的工具和上下文管理；客户端负责把群聊原话递给该接话的那一位。Mac 版的工作区权限见 [Mac 安装说明](docs/MACOS.md)。
 
 *A Windows/macOS desktop client that puts you, Claude (Claude Code), GPT (Codex) and Gemini (Google Antigravity CLI) in one group chat. Each model runs in its own official harness with its own tools and context management; the client delivers the chat, verbatim, to whoever should answer. See the [macOS guide](docs/MACOS.md) for workspace permissions.*
@@ -32,7 +34,7 @@ Mac 上关闭窗口或按 ⌘Q 会退出并关闭模型进程；缩到 Dock 请�
 ## 怎么实现的
 
 ```
-                     群聊客户端（pywebview 窗口，不开网络端口）
+                     群聊客户端（pywebview 窗口，默认不开网络端口）
         ┌──────────────────┬───────────┴──────────┬──────────────────────┐
   静默分类器           Claude Code            Codex app-server      Antigravity CLI
   (claude -p, 无工具)  (stream-json 持续进程)  (JSON-RPC 持续线程)   (headless stream-json)
@@ -40,6 +42,7 @@ Mac 上关闭窗口或按 ⌘Q 会退出并关闭模型进程；缩到 Dock 请�
 ```
 
 - 每个群聊一份只追加的聊天记录（`~/.claude/groupchat2/rooms/<群聊>/channel.jsonl`）。每位成员有自己的读取游标：被叫到时，它拿到的是自己上次之后的群聊原话，加一段客户端环境说明（当前模式、消息来源、要处理的消息编号）。
+- 手机连接手动开启后仅监听本机回环 TCP 8765，通过 Tailscale Serve 的私有 HTTPS 8443 连接，配对后的浏览器向同一个桌面进程递送消息；不会另外启动一套模型。关闭连接或退出桌面客户端会关闭本机端口，并移除本应用的 Serve 映射；不启用公网 Funnel。
 - 三个程序都通过各自官方的无界面接口托管：Claude Code 的 `--input-format/--output-format stream-json`，Codex 的 `app-server`，Antigravity CLI 的 headless `stream-json`。模型的上下文压缩、缓存、工具执行都由各自的程序负责；客户端不替它们管理上下文。
 - 后加入的成员（例如在老群聊里新加入的 Gemini）从最近一段原文读起，更早的原文它知道在哪个文件里，需要时自己查。
 - 运行规范和每个设计决定的理由在 [`app2/PROTOCOL.md`](app2/PROTOCOL.md)；给模型的说明在 [`app2/prompts/`](app2/prompts/)，可以按你的习惯改。

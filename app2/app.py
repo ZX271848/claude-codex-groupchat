@@ -991,7 +991,10 @@ class App:
         self.gpt = {"work": GPTEngine(self, "work")}
         self.classifier = Classifier(lambda: backends.find("claude"), os.path.join(PROMPTS, 'coordinator-memory.md'), routing_log, child_env)
         self.sessions = {}
+        self.sessions_lock = threading.RLock()
         self.closing = threading.Event()
+        from mobile import MobileCompanion
+        self.mobile = MobileCompanion(self, STATE, A1.conversations, new_room_dir)
 
     @property
     def rid(self):
@@ -999,10 +1002,11 @@ class App:
 
     def sess(self, rid=None):
         rid = rid or self.rid
-        if rid not in self.sessions:
-            room = self.room if rid == self.rid else C.room_by_dir(os.path.join(C.ROOMS_DIR, rid))
-            self.sessions[rid] = RoomSession(self, room)
-        return self.sessions[rid]
+        with self.sessions_lock:
+            if rid not in self.sessions:
+                room = self.room if rid == self.rid else C.room_by_dir(os.path.join(C.ROOMS_DIR, rid))
+                self.sessions[rid] = RoomSession(self, room)
+            return self.sessions[rid]
 
     def take_claude_usage(self, obj):
         w = (obj.get("rate_limits") or {}).get("seven_day") or {}
@@ -1064,8 +1068,8 @@ class App:
             if n % 12 == 0 and self.room:
                 self.js("status", self.status_payload())
 
-    def status_payload(self):
-        s, models = self.sess(), {}
+    def status_payload(self, rid=None):
+        s, models = self.sess(rid), {}
         for model in s.members:
             lane = s.lane(model)
             if model == 'gemini':
@@ -1087,8 +1091,9 @@ class App:
         retry = [{'id': j['id'], 'model': j.get('model'), 'error': j.get('error', '上次调用中断'),
                   'status': j['status'], 'interruption': j.get('interruption'),
                   'seqs': j['seqs']} for j in s.jobs if j['status'] in ('failed', 'interrupted')]
-        return {'models': models, 'conn': s.phase, 'mode': s.mode, 'retry': retry,
-                'busyRooms': [rid for rid, x in self.sessions.items() if x.busy]}
+        with self.sessions_lock:
+            busy = [rid for rid, x in self.sessions.items() if x.busy]
+        return {'models': models, 'conn': s.phase, 'mode': s.mode, 'retry': retry, 'busyRooms': busy}
 
     def save_prefs(self):
         self.prefs.update({"route": self.route, "claude_model": self.claude_cfg["model"], "claude_effort": self.claude_cfg["effort"],
@@ -1134,7 +1139,7 @@ class App:
 
 
 def new_room_dir(proj_id, proj_name, root, title):
-    rid = re.sub(r'[<>:"/\\|?*]', "_", f"{proj_name}-{time.strftime('%Y%m%d-%H%M%S')}")
+    rid = re.sub(r'[<>:"/\\|?*]', "_", f"{proj_name}-{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}")
     d = os.path.join(C.ROOMS_DIR, rid)
     os.makedirs(d, exist_ok=True)
     C.save_json(os.path.join(d, "room.json"), {"name": title, "title": title, "project": proj_name,
@@ -1145,6 +1150,23 @@ def new_room_dir(proj_id, proj_name, root, title):
 class Api:
     def __init__(self, app):
         self._app = app
+
+    def mobile_control(self, action='status'):
+        """Native bridge only; deliberately absent from the HTTP action allowlist."""
+        mobile = self._app.mobile
+        commands = {'status': mobile.desktop_status, 'start': mobile.start, 'stop': mobile.stop,
+                    'refresh': mobile.refresh_code, 'revoke': mobile.revoke}
+        if action not in commands:
+            return {'error': '无效操作'}
+        try:
+            return commands[action]()
+        except Exception as exc:
+            from mobile import MobileError
+            if isinstance(exc, MobileError):
+                return {'error': str(exc)}
+            if isinstance(exc, OSError):
+                return {'error': '无法开启手机连接，请检查本机 8765 端口是否被占用'}
+            raise
 
     def init(self):
         a = self._app
@@ -1184,6 +1206,10 @@ class Api:
         return self.switch_room(new_room_dir(pid, proj["name"], proj["root"], "新对话 " + time.strftime("%m-%d %H:%M")))
 
     def archive_room(self, rid, archived=True):
+        with self._app.sessions_lock:
+            return self._archive_room(rid, archived)
+
+    def _archive_room(self, rid, archived=True):
         a = self._app
         path = os.path.join(C.ROOMS_DIR, rid, "room.json")
         info = C.load_json(path, None)
@@ -1385,6 +1411,7 @@ def run_window(instance=None):
         if app.closing.is_set():
             return
         app.closing.set()
+        app.mobile.stop()
         for s in list(app.sessions.values()):
             s.shutdown()
         app.classifier.close()

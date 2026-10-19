@@ -166,6 +166,14 @@ textarea{flex:1;resize:none;min-height:46px;max-height:220px;border:1px solid va
 .side h3{font-size:12px;color:var(--muted);font-weight:500;margin:4px 0 10px}
 .rules{font-size:12px;color:var(--muted);line-height:1.75;border-top:1px solid var(--line);padding-top:12px}
 .rules b{color:var(--ink);font-weight:600}
+#phone-dialog{width:520px;max-width:90vw;border:1px solid var(--line);border-radius:16px;padding:24px;color:var(--ink)}
+#phone-dialog::backdrop{background:#122d3b55}
+#phone-dialog h2{margin:0;font-size:20px} #phone-dialog p{color:var(--muted)}
+#phone-dialog .phone-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:16px}
+#phone-dialog button{padding:8px 14px;border:1px solid var(--line);border-radius:8px;background:#f3f7f5;cursor:pointer}
+#phone-code{font:30px/1.5 monospace;letter-spacing:5px;color:var(--accent);user-select:text}
+#phone-urls{user-select:text;overflow-wrap:anywhere}
+#phone-close{float:right}
 </style>
 </head>
 <body>
@@ -173,6 +181,7 @@ textarea{flex:1;resize:none;min-height:46px;max-height:220px;border:1px solid va
   <div class="brand">群聊<small>Coordinator</small></div>
   <div class="title-row"><div class="title" id="title" title="双击改名"></div><button class="act" id="rename-title" title="给当前群聊改名">改名</button></div>
   <div class="spacer"></div>
+  <button class="act" id="phone-connect">连接手机</button>
   <div class="conn" id="conn"></div>
 </header>
 <div class="main">
@@ -241,6 +250,19 @@ textarea{flex:1;resize:none;min-height:46px;max-height:220px;border:1px solid va
     </div>
   </aside>
 </div>
+<dialog id="phone-dialog" aria-labelledby="phone-heading">
+  <button id="phone-close" aria-label="关闭">×</button>
+  <h2 id="phone-heading">手机与电脑，一起群聊</h2>
+  <p>Mac 和 iPhone 连接 Tailscale、登录同一账号后，在 iPhone 的 Safari 打开下方 HTTPS 地址。配对后，点击分享 → 添加到主屏幕 → 添加。</p>
+  <div id="phone-urls"></div>
+  <div id="phone-code"></div>
+  <p id="phone-status">尚未开启</p>
+  <p>Mac 需要保持开机并运行群聊。仅通过 Tailscale 私有加密网络连接，普通局域网设备无法访问。配对后的设备可以操作这些群聊和项目。</p>
+  <div class="phone-actions">
+    <button data-phone="start">开启连接</button><button data-phone="refresh">刷新配对码</button>
+    <button data-phone="stop">关闭连接</button><button data-phone="revoke">撤销所有配对</button>
+  </div>
+</dialog>
 <script>
 const $ = s => document.querySelector(s);
 const NAMES = {user:'你', claude:'Claude', gpt:'GPT', gemini:'Gemini'};
@@ -425,6 +447,20 @@ window.gc = {
   reset(){inner.innerHTML='<div class="empty">还没有消息</div>'; state.live={}},
 };
 const api = () => window.pywebview && window.pywebview.api;
+async function phoneControl(action='status'){
+  if(!api())return;
+  const r=await api().mobile_control(action);
+  if(r.error){$('#phone-status').textContent=r.error;return}
+  $('#phone-urls').textContent=r.running?(r.urls.join('  或  ')||'私有 HTTPS 地址尚未就绪'):'连接已关闭';
+  $('#phone-code').textContent=r.code||'';
+  $('#phone-status').textContent=r.running?`已配对 ${r.devices} 台设备。`+(r.code?'配对码 5 分钟有效，仅可使用一次。':'配对码已使用或过期；新设备请刷新配对码。'):'连接已关闭。需要 Tailscale 已登录并启用 HTTPS / Serve；每次重开群聊需再次开启。';
+  document.querySelector('[data-phone="start"]').disabled=r.running;
+  for(const cmd of ['refresh','stop'])document.querySelector(`[data-phone="${cmd}"]`).disabled=!r.running;
+}
+$('#phone-connect').onclick=()=>{$('#phone-dialog').showModal();phoneControl()};
+$('#phone-close').onclick=()=>$('#phone-dialog').close();
+$('#phone-dialog').addEventListener('click',e=>{const b=e.target.closest('[data-phone]');if(b)phoneControl(b.dataset.phone)});
+setInterval(()=>{if($('#phone-dialog').open)phoneControl()},3000);
 
 $('#collaboration-mode').addEventListener('change',async e=>{
   const mode=e.target.value; e.target.disabled=true;

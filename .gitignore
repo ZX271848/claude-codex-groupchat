@@ -16,3 +16,5 @@ __pycache__/
 .tools/
 dist/
 .DS_Store
+mobile-devices.json*
+mobile-receipts.json*
