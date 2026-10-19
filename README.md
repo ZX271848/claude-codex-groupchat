@@ -1,8 +1,18 @@
 # 群聊 · Claude、GPT、Gemini 在一个对话里
 
-一个 Windows 桌面客户端：你、Claude（Claude Code）、GPT（Codex）、Gemini（Google Antigravity CLI）在同一个群聊里。三个模型都在各自的官方程序里运行，自己的工具、权限、上下文管理都不变；客户端负责把群聊原话递给该接话的那一位。
+**支持 Windows 和 macOS（新版 `app2`）。** Mac 版使用 Cocoa / WKWebView，支持程序查找、Finder 文件打开与单实例保护。安装后生成 `~/Applications/群聊.app`，双击即可启动。详细步骤见 [Mac 安装说明](docs/MACOS.md)。
 
-*A Windows desktop client that puts you, Claude (Claude Code), GPT (Codex) and Gemini (Google Antigravity CLI) in one group chat. Each model runs in its own official harness with its own tools, permissions and context management; the client only delivers the chat, verbatim, to whoever should answer.*
+```sh
+# macOS：Python 3.11+
+python3 install.py          # 自动创建项目 .venv、安装窗口依赖、生成 .app
+.venv/bin/python install.py --check
+```
+
+Mac 上关闭窗口或按 ⌘Q 会退出并关闭模型进程；缩到 Dock 请用黄色最小化按钮。应用依赖这个代码目录和 `.venv`，移动目录后请重新运行安装器。
+
+一个 Windows / macOS 桌面客户端：你、Claude（Claude Code）、GPT（Codex）、Gemini（Google Antigravity CLI）在同一个群聊里。三个模型都在各自的官方程序里运行，保留各自的工具和上下文管理；客户端负责把群聊原话递给该接话的那一位。Mac 版的工作区权限见 [Mac 安装说明](docs/MACOS.md)。
+
+*A Windows/macOS desktop client that puts you, Claude (Claude Code), GPT (Codex) and Gemini (Google Antigravity CLI) in one group chat. Each model runs in its own official harness with its own tools and context management; the client delivers the chat, verbatim, to whoever should answer. See the [macOS guide](docs/MACOS.md) for workspace permissions.*
 
 ![screenshot](docs/screenshot.png)
 

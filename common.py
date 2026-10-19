@@ -11,7 +11,11 @@ A room is one Codex project, named as Codex names it. A Codex window joins a roo
 only when it was opened for that purpose (a pending marker, consumed by the first
 new thread in the project); Claude sessions join by working in the project.
 """
-import glob, json, os, re, sqlite3, shutil, subprocess, tempfile, time, msvcrt
+import glob, json, os, re, sqlite3, shutil, subprocess, tempfile, time
+if os.name == "nt":
+    import msvcrt
+else:
+    import fcntl
 
 HOME = os.path.expanduser("~")
 BRIDGE_DIR = os.environ.get("CODEX_BRIDGE_DIR") or os.path.join(HOME, ".claude", "codex-bridge")  # override for tests
@@ -117,6 +121,9 @@ class Lock:
         self.f = open(path + ".lock", "a+")
 
     def __enter__(self):
+        if os.name != "nt":
+            fcntl.flock(self.f.fileno(), fcntl.LOCK_EX)
+            return self
         while True:
             try:
                 self.f.seek(0)
@@ -126,9 +133,14 @@ class Lock:
                 time.sleep(0.02)
 
     def __exit__(self, *a):
-        self.f.seek(0)
-        msvcrt.locking(self.f.fileno(), msvcrt.LK_UNLCK, 1)
-        self.f.close()
+        try:
+            if os.name == "nt":
+                self.f.seek(0)
+                msvcrt.locking(self.f.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                fcntl.flock(self.f.fileno(), fcntl.LOCK_UN)
+        finally:
+            self.f.close()
 
 
 # ---------- Codex projects -> rooms ----------
@@ -353,6 +365,16 @@ def note_settings(room, who, **kv):
 
 
 def pid_alive(pid):
+    if os.name != "nt":
+        try:
+            if int(pid) <= 0:
+                return False
+            os.kill(int(pid), 0)
+            return True
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
     import ctypes
     h = ctypes.windll.kernel32.OpenProcess(0x1000, False, int(pid))
     if not h:
@@ -388,7 +410,7 @@ def queue_to_gpt(room, e):
             q.append({"thread": tid, "text": e["text"], "seq": e["seq"], "at": time.time()})
             save_json(path, q)
         r = subprocess.run([codex_exe(), "queue", "--thread", tid, "--message", e["text"]],
-                           capture_output=True, timeout=60, creationflags=0x08000000)
+                           capture_output=True, timeout=60, creationflags=0x08000000 if os.name == "nt" else 0)
         msg = (r.stdout if r.returncode == 0 else r.stderr) or b""
         sent.append((tid, r.returncode, msg.decode("utf-8", "replace").strip()))
     return sent

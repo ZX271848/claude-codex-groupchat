@@ -509,7 +509,7 @@ class TransportTest(unittest.TestCase):
         self.assertEqual(finals,['failed']);self.assertFalse(lane.busy)
 
     def test_gpt_resume_uses_original_worker_and_current_instructions(self):
-        with tempfile.TemporaryDirectory(dir=TEMP.name) as directory:
+        with tempfile.TemporaryDirectory(dir=TEMP.name) as directory, patch.object(A.sys, 'platform', 'darwin'):
             room={'dir':directory,'root':directory,'name':'test'}
             C.save_json(Path(directory)/'gpt-work.json',{'thread':'original-worker'})
             C.save_json(Path(directory)/'gpt-front.json',{'thread':'unused-front'})
@@ -521,6 +521,42 @@ class TransportTest(unittest.TestCase):
             self.assertEqual(calls[0][0],'thread/resume')
             self.assertIn('持续工作会话',calls[0][1]['developerInstructions'])
             self.assertNotIn('baseInstructions',calls[0][1])
+            self.assertEqual(calls[0][1]['sandbox'], 'workspace-write')
+            self.assertEqual(calls[0][1]['cwd'], directory)
+
+    def test_gpt_new_worker_can_write_its_project_without_full_access(self):
+        with tempfile.TemporaryDirectory(dir=TEMP.name) as directory, patch.object(A.sys, 'platform', 'darwin'):
+            room={'dir':directory,'root':directory,'name':'test'}
+            calls=[]
+            def call(method, params):
+                calls.append((method, params))
+                return {'thread': {'id': 'new-worker'}} if method == 'thread/start' else {}
+            engine=SimpleNamespace(loaded=set(),lanes={},call=call)
+            rs=SimpleNamespace(room=room,app=SimpleNamespace(gpt={'work':engine}))
+            lane=A.GPTLane(rs,'work');lane.open()
+            self.assertEqual(lane.tid, 'new-worker')
+            self.assertEqual(calls[0][1]['sandbox'], 'workspace-write')
+            self.assertEqual(calls[0][1]['cwd'], directory)
+            self.assertEqual(C.load_json(Path(directory)/'gpt-work.json', {})['thread'], 'new-worker')
+
+    def test_windows_gpt_workers_preserve_configured_sandbox(self):
+        for resume in (False, True):
+            with self.subTest(resume=resume), tempfile.TemporaryDirectory(dir=TEMP.name) as directory, \
+                 patch.object(A.sys, 'platform', 'win32'):
+                room={'dir':directory,'root':directory,'name':'test'}
+                if resume:
+                    C.save_json(Path(directory)/'gpt-work.json', {'thread':'saved-worker'})
+                calls=[]
+                def call(method, params):
+                    calls.append((method, params))
+                    return {'thread': {'id': 'new-worker'}} if method == 'thread/start' else {}
+                engine=SimpleNamespace(loaded=set(),lanes={},call=call)
+                rs=SimpleNamespace(room=room,app=SimpleNamespace(gpt={'work':engine}))
+                A.GPTLane(rs,'work').open()
+                self.assertEqual(calls[0][0], 'thread/resume' if resume else 'thread/start')
+                self.assertNotIn('sandbox', calls[0][1])
+                if resume:
+                    self.assertNotIn('approvalPolicy', calls[0][1])
 
     def test_claude_resume_refreshes_saved_system_and_preserves_worker(self):
         with tempfile.TemporaryDirectory(dir=TEMP.name) as directory:

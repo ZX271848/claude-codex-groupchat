@@ -22,7 +22,7 @@ import app as A1  # shared helpers of the first client (paths, quota parsing, co
 PROMPTS = os.path.join(HERE, "prompts")
 PREFS = os.path.join(STATE, "app-prefs.json")
 ICON = os.path.join(HERE, "groupchat2.ico")  # blue, so it is told apart from the green first client
-NO_WINDOW = 0x08000000
+NO_WINDOW = 0x08000000 if os.name == "nt" else 0
 MODELS = ("claude", "gpt")
 GEMINI_EFFORTS = ("low", "medium", "high")  # agy model slugs end in the effort: gemini-4-argon-high
 PHILOSOPHY = [os.path.join(os.path.expanduser("~"), ".codex", "AGENTS.md"),
@@ -49,6 +49,7 @@ def log(where, ex):
 
 def child_env(**extra):
     env = dict(os.environ, GROUPCHAT_OFF="1", CODEX_BRIDGE_DIR=STATE, **extra)
+    env["PATH"] = backends.desktop_path()
     for k in ("GROUPCHAT_HOSTED", "GROUPCHAT_ROOM", "GROUPCHAT_CHANNEL"):
         env.pop(k, None)
     return env
@@ -76,15 +77,23 @@ TEXT_EXT = {".md", ".markdown", ".txt", ".log", ".py", ".pyw", ".ipynb", ".json"
             ".jsx", ".css", ".scss", ".xml", ".tex", ".bib", ".rs", ".go", ".c", ".h", ".cpp", ".hpp", ".java", ".kt", ".sql",
             ".r", ".lua", ".rb", ".php", ".vue", ".svelte", ".gitignore", ""}
 REVEAL_EXT = {".exe", ".com", ".scr", ".msi", ".msix", ".appx", ".lnk", ".url", ".reg", ".hta", ".cpl", ".vbs", ".vbe",
-              ".jse", ".wsf", ".wsh", ".jar", ".msc", ".dll", ".sys"}
+              ".jse", ".wsf", ".wsh", ".jar", ".msc", ".dll", ".sys", ".app", ".dmg", ".pkg", ".command", ".workflow"}
 
 
 def resolve_path(raw, room):
     """A path as written in a message (absolute, ~, /c/…, relative to the project, with :line or #L…) -> an existing path."""
     import urllib.parse
     s = urllib.parse.unquote((raw or "").strip().strip("\"'<>"))
-    s = re.sub(r"^file:/{2,3}", "", s)
-    s = re.sub(r"^/([a-zA-Z])/", r"\1:/", s)
+    if s.lower().startswith("file:"):
+        uri = urllib.parse.urlsplit(s)
+        s = uri.path
+        if uri.netloc and uri.netloc != "localhost":
+            s = "//" + uri.netloc + s
+        if uri.fragment:
+            s += "#" + uri.fragment
+    if os.name == "nt":
+        s = re.sub(r"^/([a-zA-Z])(?=[:/])", r"\1", s)
+        s = re.sub(r"^([a-zA-Z])/", r"\1:/", s)
     s = os.path.expandvars(os.path.expanduser(s))
     tries = [s, re.sub(r"#L?\d+.*$", "", s), re.sub(r"^(.+?):\d+(:\d+)?$", r"\1", s)]
     for t in tries:
@@ -104,6 +113,22 @@ def editor():
 
 def open_path(p):
     ext = os.path.splitext(p)[1].lower()
+    if sys.platform == "darwin":
+        import shutil
+        if ext in REVEAL_EXT or (os.path.isfile(p) and os.access(p, os.X_OK) and ext not in TEXT_EXT):
+            cmd = ["/usr/bin/open", "-R", p]
+        elif os.path.isfile(p) and ext in TEXT_EXT:
+            code = shutil.which("code", path=backends.desktop_path())
+            vscode = "/Applications/Visual Studio Code.app"
+            cmd = ([code, "--", p] if code else ["/usr/bin/open", "-a", vscode, p]
+                   if os.path.isdir(vscode) else ["/usr/bin/open", "-t", p])
+        else:
+            cmd = ["/usr/bin/open", p]
+        subprocess.Popen(cmd, env=child_env())
+        return
+    if os.name != "nt":
+        subprocess.Popen(["xdg-open", p])
+        return
     if os.path.isdir(p):
         os.startfile(p)
     elif ext in REVEAL_EXT:
@@ -385,6 +410,10 @@ class GPTEngine:
             args = [exe, "app-server"]
             self.p = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                                       creationflags=NO_WINDOW, env=child_env())
+            if self.app.closing.is_set():
+                from desktop import stop_process
+                stop_process(self.p)
+                return
             threading.Thread(target=self.read, daemon=True).start()
             self.call("initialize", {"clientInfo": {"name": f"groupchat2-{self.role}", "version": "1.0-coordinator"},
                                      "capabilities": {"experimentalApi": True}})
@@ -477,6 +506,8 @@ class GPTLane(Lane):
         if tid and tid not in eng.loaded:
             try:
                 params = {"threadId": tid, "excludeTurns": True}
+                if sys.platform == "darwin":
+                    params.update(cwd=room["root"], approvalPolicy="never", sandbox="workspace-write")
                 params['developerInstructions'] = prompt_text('work.md')
                 eng.call("thread/resume", params)
             except RuntimeError as ex:
@@ -484,7 +515,11 @@ class GPTLane(Lane):
                     raise
                 tid = None
         if not tid:
+            # App-server otherwise inherits the CLI default, which can be read-only.
+            # Workers need to write their room's project while keeping the sandbox.
             params = {"cwd": room["root"], "approvalPolicy": "never"}
+            if sys.platform == "darwin":
+                params["sandbox"] = "workspace-write"
             if room.get("project_id"):
                 params["projectId"] = room["project_id"]
             params["developerInstructions"] = prompt_text("work.md")
@@ -956,6 +991,7 @@ class App:
         self.gpt = {"work": GPTEngine(self, "work")}
         self.classifier = Classifier(lambda: backends.find("claude"), os.path.join(PROMPTS, 'coordinator-memory.md'), routing_log, child_env)
         self.sessions = {}
+        self.closing = threading.Event()
 
     @property
     def rid(self):
@@ -1020,8 +1056,7 @@ class App:
 
     def pump(self):
         n = 0
-        while True:
-            time.sleep(0.08)
+        while not self.closing.wait(0.08):
             self.flush()
             n += 1
             if n % 5 == 0 and self.room:
@@ -1047,7 +1082,8 @@ class App:
                              'queued': len(s.waiting[model]), 'lanes': {'work': lane.state()},
                              'quota': self.claude_quota if model == 'claude' else self.gpt['work'].quota,
                              'access': A1.CLAUDE_ACCESS.get(self.claude_cfg['perm'], self.claude_cfg['perm'])
-                             if model == 'claude' else A1.GPTEngine.access.fget(self.gpt['work'])}
+                             if model == 'claude' else '工作区可写（当前群聊项目）' if sys.platform == 'darwin'
+                             else A1.GPTEngine.access.fget(self.gpt['work'])}
         retry = [{'id': j['id'], 'model': j.get('model'), 'error': j.get('error', '上次调用中断'),
                   'status': j['status'], 'interruption': j.get('interruption'),
                   'seqs': j['seqs']} for j in s.jobs if j['status'] in ('failed', 'interrupted')]
@@ -1298,10 +1334,28 @@ def first_room(app):
 
 
 def main():
-    import tray
-    tray.CLASS = "GroupChat2TrayWindow"  # its own tray and single-instance identity: runs beside the first client
-    if tray.bring_to_front():
-        return
+    from desktop import SingleInstance
+    instance = None
+    if os.name == "nt":
+        import tray
+        tray.CLASS = "GroupChat2TrayWindow"
+        if tray.bring_to_front():
+            return
+    else:
+        instance = SingleInstance(STATE)
+        if not instance.acquire():
+            return
+    try:
+        run_window(instance)
+    finally:
+        if instance:
+            instance.close()
+
+
+def run_window(instance=None):
+    from desktop import stop_process
+    # Finder launches with a minimal environment, including for npm's node shebang.
+    os.environ["PATH"] = backends.desktop_path()
     app = App()
     if app.room is None:
         first_room(app)
@@ -1327,7 +1381,22 @@ def main():
                                        width=1440, height=920, min_size=(900, 600), text_select=True)
     quitting = {"now": False}
 
+    def shutdown():
+        if app.closing.is_set():
+            return
+        app.closing.set()
+        for s in list(app.sessions.values()):
+            s.shutdown()
+        app.classifier.close()
+        for eng in app.gpt.values():
+            stop_process(eng.p)
+        stop_process(getattr(app, "_usage_process", None))
+
     def on_closing():
+        if os.name != "nt":
+            # Cocoa's Cmd+Q can terminate the interpreter before start() returns.
+            shutdown()
+            return True
         if quitting["now"]:
             return True
         app.window.hide()
@@ -1342,15 +1411,21 @@ def main():
         app.window.destroy()
 
     app.window.events.closing += on_closing
-    tray.Tray(ICON, "群聊 · Coordinator", show, quit_all).start()
+    tray_icon = None
+    if os.name == "nt":
+        import tray
+        tray_icon = tray.Tray(ICON, "群聊 · Coordinator", show, quit_all)
+        tray_icon.start()
+    elif instance:
+        app.window.events.loaded += lambda: instance.watch(show)
     threading.Thread(target=app.pump, daemon=True).start()
-    webview.start(gui="edgechromium", private_mode=False, icon=ICON)  # window and taskbar icon (the process is pythonw)
-    for s in list(app.sessions.values()):
-        s.shutdown()
-    app.classifier.close()
-    for eng in app.gpt.values():
-        if eng.p:
-            eng.p.kill()
+    try:
+        webview.start(gui="edgechromium" if os.name == "nt" else "cocoa" if sys.platform == "darwin" else None,
+                      private_mode=False, icon=ICON if os.name == "nt" else None)
+    finally:
+        shutdown()
+        if tray_icon:
+            tray_icon.remove()
 
 
 if __name__ == "__main__":
