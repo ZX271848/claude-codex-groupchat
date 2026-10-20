@@ -1,4 +1,5 @@
 """Real HTTP + fake workers: never logs into a provider or touches a live room."""
+import os
 import base64
 from concurrent.futures import ThreadPoolExecutor
 import http.client
@@ -16,6 +17,16 @@ from qa.test_coordinator import A, C, FakeLane
 from conversation import Conversation
 from mobile import MobileCompanion, MobileError
 from mobile_transport import TailscaleServe, TransportError
+
+
+def symlink_or_skip(test, link, target, directory=False):
+    """Windows needs administrator rights or developer mode to create a symbolic link."""
+    try:
+        link.symlink_to(target, target_is_directory=directory)
+    except OSError as ex:
+        if getattr(ex, 'winerror', None) == 1314:
+            test.skipTest('Windows: no privilege to create symbolic links')
+        raise
 
 
 class MobileTest(unittest.TestCase):
@@ -132,7 +143,8 @@ class MobileTest(unittest.TestCase):
         self.assertEqual(self.http('/api/pair', {'code':code})[0],401)
         saved = (self.root/'mobile-devices.json').read_text()
         self.assertNotIn(self.cookie.split('=',1)[1], saved)
-        self.assertEqual((self.root/'mobile-devices.json').stat().st_mode & 0o777, 0o600)
+        if os.name != 'nt':  # Windows has no POSIX mode bits; the profile folder's ACL protects the file there
+            self.assertEqual((self.root/'mobile-devices.json').stat().st_mode & 0o777, 0o600)
         self.assertEqual(self.http('/api/snapshot')[0],200)
 
     def test_pair_expiry_rate_limit_refresh(self):
@@ -221,7 +233,7 @@ class MobileTest(unittest.TestCase):
     def test_room_traversal_and_archived_room(self):
         for rid in ('../project','phone/..','..','/tmp',None):
             with self.assertRaises(MobileError):self.mobile.snapshot(rid,0) if rid else self.mobile.room(rid)
-        (self.rooms/'link').symlink_to(self.project, target_is_directory=True)
+        symlink_or_skip(self, self.rooms/'link', self.project, True)
         with self.assertRaises(MobileError):self.mobile.room('link')
         C.save_json(str(self.rooms/'phone/room.json'),{'archived':True})
         with self.assertRaises(MobileError):self.mobile.snapshot('phone')
@@ -235,7 +247,7 @@ class MobileTest(unittest.TestCase):
         self.assertEqual(kind,'image/png')
         self.assertIn('error',self.mobile.action(self.command(images=['../../secret.png'])))
         outside=self.root/'private.png';outside.write_bytes(data)
-        (self.project/'escape.png').symlink_to(outside)
+        symlink_or_skip(self, self.project/'escape.png', outside)
         with self.assertRaises(MobileError):self.mobile.image('phone','escape.png')
         self.assertIn('error',self.mobile.action(self.command('attach',data='data:image/svg+xml;base64,AAAA')))
 
