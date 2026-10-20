@@ -15,11 +15,13 @@ over), applied to a room of this client:
 The new room appears in the client's room list (reopen the list or the client if it does not show at once).
 """
 import glob, json, os, queue, re, shutil, subprocess, sys, threading, time, uuid
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import backends
 sys.stdout.reconfigure(encoding="utf-8")
 HOME = os.path.expanduser("~")
 STATE = os.path.join(HOME, ".claude", "groupchat2")
 ROOMS = os.path.join(STATE, "rooms")
-WORK_PROMPT = os.path.join(HOME, ".claude", "codex-bridge", "app2", "prompts", "work.md")
+WORK_PROMPT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "prompts", "work.md")
 CHAIN = {"user", "assistant", "attachment", "system"}
 args = sys.argv[1:]
 SRC = os.path.join(ROOMS, args[0])
@@ -45,12 +47,14 @@ def save(p, obj):
 # ---------- Codex app-server (same handshake as the client / fork_gpt_thread.py) ----------
 class Engine:
     def __init__(self, name):
-        exe = os.environ.get("CODEX_CLI_PATH") or max(glob.glob(os.path.join(HOME, "AppData", "Local", "OpenAI", "Codex", "bin", "*", "codex.exe")), key=os.path.getmtime)
-        env = dict(os.environ, GROUPCHAT_OFF="1", CODEX_BRIDGE_DIR=STATE)
+        exe = backends.find("codex")
+        if not exe:
+            raise RuntimeError(backends.missing_note("codex"))
+        env = dict(os.environ, GROUPCHAT_OFF="1", CODEX_BRIDGE_DIR=STATE, PATH=backends.desktop_path())
         for k in ("GROUPCHAT_HOSTED", "GROUPCHAT_ROOM", "GROUPCHAT_CHANNEL"):
             env.pop(k, None)
         self.p = subprocess.Popen([exe, "app-server"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                                  creationflags=0x08000000, env=env)
+                                  creationflags=0x08000000 if os.name == "nt" else 0, env=env)
         self.nid, self.pending, self.lock = 0, {}, threading.Lock()
         threading.Thread(target=self.read, daemon=True).start()
         self.call("initialize", {"clientInfo": {"name": name, "version": "1.0-coordinator"}, "capabilities": {"experimentalApi": True}})

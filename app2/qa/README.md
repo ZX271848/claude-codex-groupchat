@@ -1,5 +1,17 @@
 # Checks
 
+macOS regression suite (run from `app2/`, after `python3 install.py`):
+
+```sh
+../.venv/bin/python -m unittest qa.test_coordinator qa.test_gemini_member qa.test_routing_session qa.test_macos
+node qa/test_display.cjs
+node qa/test_paths.js
+```
+
+`qa/test_macos.py` checks concurrent file locking, single-instance crash recovery, CLI discovery with a Finder-like PATH, file opening, file URLs and a launcher stored under a path containing spaces and apostrophes. It does not contact a model.
+
+Optional native macOS smoke check: `../.venv/bin/python qa/smoke_macos.py`. It opens and closes a real WKWebView window in the graphical login session, checks the JavaScript bridge and Codex app-server handshake, and confirms that the backend exits. It uses a temporary chat directory and sends no model prompts. Codex must already be available.
+
 Run with the desktop client's Python environment:
 
 ```

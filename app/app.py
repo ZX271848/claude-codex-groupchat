@@ -25,7 +25,7 @@ from work_record import WorkRecord
 DEFAULT_CWD = os.environ.get("GROUPCHAT_CWD") or os.getcwd()  # only used when there is no conversation yet
 PREFS = os.path.join(BRIDGE, "app-prefs.json")
 GUIDE = os.path.join(HERE, "GROUPCHAT.md")  # the client's own instructions, given to both models only here
-NO_WINDOW = 0x08000000
+NO_WINDOW = 0x08000000 if os.name == "nt" else 0
 CLAUDE_MODELS = [("claude-opus-5-5", "Opus 5.5"), ("claude-fable-5-1", "Fable 5.1"), ("claude-opus-5", "Opus 5"),
                  ("claude-sonnet-5", "Sonnet 5"), ("claude-haiku-4-5", "Haiku 4.5")]
 CLAUDE_EFFORTS = ["low", "medium", "high", "xhigh", "max"]
@@ -49,6 +49,9 @@ def record_event(work, method, *args):
 
 
 def claude_exe():
+    if os.name != "nt":
+        from app2 import backends
+        return backends.find("claude")
     local, roaming = os.environ.get("LOCALAPPDATA", ""), os.environ.get("APPDATA", "")
     found = glob.glob(os.path.join(local, "Packages", "Claude_*", "LocalCache", "Roaming", "Claude", "claude-code", "*", "claude.exe"))
     found += glob.glob(os.path.join(roaming, "Claude", "claude-code", "*", "claude.exe"))
@@ -257,10 +260,17 @@ def probe_claude_usage(app):
     exe = claude_exe()
     if not exe:
         return
+    p = timer = None
     try:
         p = subprocess.Popen([exe, "--input-format", "stream-json", "--output-format", "stream-json", "--verbose"],
                              cwd=os.path.expanduser("~"), stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                              env=dict(os.environ, GROUPCHAT_OFF="1"), creationflags=NO_WINDOW)
+        app._usage_process = p
+        if getattr(app, "closing", None) and app.closing.is_set():
+            return
+        timer = threading.Timer(30, lambda: p.kill() if p.poll() is None else None)
+        timer.daemon = True
+        timer.start()
         p.stdin.write(b'{"type":"control_request","request_id":"usage","request":{"subtype":"get_usage"}}\n')
         p.stdin.flush()
         end = time.time() + 30
@@ -271,9 +281,15 @@ def probe_claude_usage(app):
                 break
             if time.time() > end:
                 break
-        p.kill()
     except Exception as ex:
         log("claude usage", ex)
+    finally:
+        if timer:
+            timer.cancel()
+        if p:
+            if p.poll() is None:
+                p.kill()
+            p.wait()
 
 
 # ---------------------------------------------------------------- GPT: one Codex app-server, one thread per conversation

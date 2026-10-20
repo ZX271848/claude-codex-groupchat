@@ -12,3 +12,7 @@ hook-errors.log
 
 # client state lives in ~/.claude/groupchat2, never in the repo
 __pycache__/
+.venv/
+.tools/
+dist/
+.DS_Store

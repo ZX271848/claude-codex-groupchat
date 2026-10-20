@@ -11,3 +11,13 @@ const cases = [
   '"C:\\tmp\\x.txt" 与 `https://claude.ai/code`，还有 **C:\\a\\b.pdf**。',
 ];
 for (const c of cases) console.log(inline(c).replace(/ title="[^"]*"/g, ''), '\n');
+const assert = require('node:assert/strict');
+for (const p of ['/Users/me/project/file.py:42', '/tmp/test.txt', '/用户/项目/说明.md', '~/.claude/groupchat2']) {
+  assert.ok(inline(p).includes(`data-path="${p}"`), `bare path: ${p}`);
+  assert.ok(inline('`'+p+'`').includes(`data-path="${p}"`), `code path: ${p}`);
+}
+assert.ok(inline('`/Users/me/My Project`').includes('data-path="/Users/me/My Project"'));
+assert.ok(!inline('https://example.com/docs/page').includes('data-path='));
+assert.ok(!inline('`thread/inject_items`').includes('data-path='));
+assert.ok(inline('[文档](/Users/me/a.md)').includes('href="/Users/me/a.md"'));
+console.log('macOS and Windows path assertions passed');

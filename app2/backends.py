@@ -8,6 +8,8 @@ import glob
 import json
 import os
 import shutil
+import sys
+from pathlib import Path
 
 HOME = os.path.expanduser("~")
 LOCAL = os.environ.get("LOCALAPPDATA", os.path.join(HOME, "AppData", "Local"))
@@ -28,6 +30,35 @@ SEARCH = {
     "agy": {"env": ("GROUPCHAT_AGY_PATH",), "names": ("agy.exe", "agy"),
             "globs": [os.path.join(LOCAL, "agy", "bin", "agy.exe")]},
 }
+
+
+def desktop_path():
+    """Finder does not inherit a terminal's PATH. Include common user installations."""
+    entries = os.environ.get("PATH", "").split(os.pathsep)
+    if os.name != "nt":
+        entries += [str(Path(__file__).resolve().parents[1] / ".tools/node_modules/.bin"),
+                    os.path.join(HOME, ".local/bin"), os.path.join(HOME, ".npm-global/bin"),
+                    os.path.join(HOME, ".volta/bin"), os.path.join(HOME, ".fnm/aliases/default/bin"),
+                    "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"]
+        entries += sorted(glob.glob(os.path.join(HOME, ".nvm/versions/node/*/bin")),
+                          key=os.path.getmtime, reverse=True)
+    return os.pathsep.join(dict.fromkeys(p for p in entries if p))
+
+
+if os.name != "nt":
+    for name in SEARCH:
+        SEARCH[name]["names"] = (name,)
+        SEARCH[name]["globs"] = []
+    SEARCH["claude"]["globs"] = [os.path.join(HOME, ".local/bin/claude")]
+    SEARCH["agy"]["globs"] = [os.path.join(HOME, ".agy/bin/agy"), os.path.join(HOME, ".local/bin/agy")]
+    if sys.platform == "darwin":
+        SEARCH["claude"]["globs"] += [os.path.join(HOME, "Library/Application Support/Claude/claude-code/*/claude")]
+        for applications in ("/Applications", os.path.join(HOME, "Applications")):
+            SEARCH["codex"]["globs"] += [
+                os.path.join(applications, "Codex.app/Contents/Resources/codex"),
+                os.path.join(applications, "ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex"),
+            ]
+
 LABEL = {"claude": "Claude Code", "codex": "Codex", "agy": "Antigravity CLI (agy)"}
 _cache = {}
 
@@ -45,16 +76,21 @@ def configured(name):
 
 def find(name, fresh=False):
     """Full path of the program, or None. A configured path is used as given if it exists."""
-    if not fresh and _cache.get(name):
+    if not fresh and executable(_cache.get(name)):
         return _cache[name]
     path = configured(name)
-    if not (path and os.path.isfile(path)):
-        hits = [p for pattern in SEARCH[name]["globs"] for p in glob.glob(pattern)]
+    path = os.path.expandvars(os.path.expanduser(path)) if isinstance(path, str) else None
+    if not executable(path):
+        hits = [p for pattern in SEARCH[name]["globs"] for p in glob.glob(pattern) if executable(p)]
         path = max(hits, key=os.path.getmtime) if hits else None   # desktop apps keep one folder per version
     if not path:
-        path = next((p for p in map(shutil.which, SEARCH[name]["names"]) if p), None)
+        path = next((p for n in SEARCH[name]["names"] if (p := shutil.which(n, path=desktop_path()))), None)
     _cache[name] = path
     return path
+
+
+def executable(path):
+    return bool(path and os.path.isfile(path) and (os.name == "nt" or os.access(path, os.X_OK)))
 
 
 def missing_note(name):

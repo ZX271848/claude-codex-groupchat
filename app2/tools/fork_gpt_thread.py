@@ -5,23 +5,26 @@ usage: python fork_gpt_thread.py ROOM_DIR [--apply]
 Without --apply: fork + verify only, gpt-work.json is left untouched.
 """
 import glob, json, os, queue, shutil, subprocess, sys, threading, time
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import backends
 sys.stdout.reconfigure(encoding="utf-8")
 ROOM = sys.argv[1]
 APPLY = "--apply" in sys.argv
 HOME = os.path.expanduser("~")
 STATE = os.path.join(HOME, ".claude", "groupchat2")
-PROMPT = os.path.join(HOME, ".claude", "codex-bridge", "app2", "prompts", "work.md")
-found = glob.glob(os.path.join(HOME, "AppData", "Local", "OpenAI", "Codex", "bin", "*", "codex.exe"))
-EXE = os.environ.get("CODEX_CLI_PATH") or max(found, key=os.path.getmtime)
+PROMPT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "prompts", "work.md")
+EXE = backends.find("codex")
+if not EXE:
+    raise RuntimeError(backends.missing_note("codex"))
 
 
 class Engine:
     def __init__(self, name):
-        env = dict(os.environ, GROUPCHAT_OFF="1", CODEX_BRIDGE_DIR=STATE)
+        env = dict(os.environ, GROUPCHAT_OFF="1", CODEX_BRIDGE_DIR=STATE, PATH=backends.desktop_path())
         for k in ("GROUPCHAT_HOSTED", "GROUPCHAT_ROOM", "GROUPCHAT_CHANNEL"):
             env.pop(k, None)
         self.p = subprocess.Popen([EXE, "app-server"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                  stderr=subprocess.DEVNULL, creationflags=0x08000000, env=env)
+                                  stderr=subprocess.DEVNULL, creationflags=0x08000000 if os.name == "nt" else 0, env=env)
         self.nid, self.pending, self.lock = 0, {}, threading.Lock()
         threading.Thread(target=self.read, daemon=True).start()
         self.call("initialize", {"clientInfo": {"name": name, "version": "1.0-coordinator"},

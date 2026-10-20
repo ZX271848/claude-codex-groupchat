@@ -273,14 +273,14 @@ function inline(s){
   s = s.replace(/\*\*([^*\n]+)\*\*/g,'<strong>$1</strong>').replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g,'$1<em>$2</em>');
   return s.replace(/\u0000(\d+)\u0000/g,(m,i)=>looksPath(codes[+i])?`<code class="path" data-path="${codes[+i]}" title="点击打开">${codes[+i]}</code>`:`<code>${codes[+i]}</code>`);
 }
-const BARE=/(?:[A-Za-z]:[\\/]|\\\\(?=[\w.$-])|~[\\/])[^\s<>"'|*?`，。；：？、（）「」『』【】]+/g;
+const BARE=/(?<![\w:/])(?:[A-Za-z]:[\\/]|\\\\(?=[\w.$-])|~[\\/]|\/(?!\/)(?=[\w.\u4e00-\u9fff]))[^\s<>"'|*?`，。；：？、（）「」『』【】]+/g;
 function linkPaths(s){ /* bare absolute paths in escaped text, outside tags */
   return s.split(/(<[^>]*>)/).map(seg=>seg.startsWith('<')?seg:seg.replace(BARE,m=>{
     const tail=(m.match(/(&[a-z]+;|[.,;:!)\]])+$/)||[''])[0], p=m.slice(0,m.length-tail.length);
     return `<span class="path" data-path="${p}" title="点击打开">${p}</span>`+tail})).join('');
 }
 function looksPath(c){ /* a code span that names a file or folder: absolute, or relative with a folder and an extension */
-  return /^([A-Za-z]:[\\/]|\\\\\S|~[\\/]|\/[a-zA-Z]\/)/.test(c) || /^[^\s:*?"<>|]+[\\/][^\s:*?"<>|]*\.[A-Za-z0-9]{1,8}(:\d+(:\d+)?)?$/.test(c);
+  return /^([A-Za-z]:[\\/]|\\\\\S|~[\\/]|\/[^/\s])/.test(c) || /^[^\s:*?"<>|]+[\\/][^\s:*?"<>|]*\.[A-Za-z0-9]{1,8}(:\d+(:\d+)?)?$/.test(c);
 }
 document.addEventListener('click',e=>{
   const a=e.target.closest('a[href]');
