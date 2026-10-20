@@ -139,7 +139,8 @@ class Conversation:
 
     def handle_user(self, incoming):
         event = C.append(self.room, 'user', incoming.get('text', ''), 'client',
-                         to=[], images=incoming.get('images', []))
+                         to=[], images=incoming.get('images', []),
+                         **({'mobile_request_id': incoming['mobile_request_id']} if incoming.get('mobile_request_id') else {}))
         target = explicit_target(event['text'], incoming.get('route', 'auto'), self.members)
         job = self.new_job(None, [event['seq']], 'user', status='classifying')
         try:

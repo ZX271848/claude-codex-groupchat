@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#f6f8f7">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="群聊">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="stylesheet" href="/mobile.css">
+  <script src="/mobile.js" defer></script>
+  <title>群聊 · 手机</title>
+</head>
+<body>
+  <main id="pair" class="pair">
+    <div class="pair-card">
+      <img src="/icon.svg" width="64" height="64" alt="">
+      <p class="eyebrow">GROUPCHAT · COMPANION</p>
+      <h1>把群聊带在身边</h1>
+      <p>接上 Mac，继续与 GPT、Claude 和 Gemini 协作。项目和模型都在你的电脑上。</p>
+      <form id="pair-form">
+        <label for="pair-code">Mac 上的 8 位配对码</label>
+        <input id="pair-code" inputmode="numeric" pattern="[0-9]{8}" maxlength="8" autocomplete="one-time-code" placeholder="00000000" required>
+        <button class="primary" id="pair-submit">连接 Mac</button>
+      </form>
+      <p id="pair-error" role="alert"></p>
+      <p class="subtle">在 Mac 群聊右上角，点击「连接手机」。<br>两台设备需连接 Tailscale，并登录同一账号。</p>
+    </div>
+  </main>
+  <div id="app" hidden>
+    <header>
+      <button id="rooms-open" class="icon-button" aria-label="选择群聊" aria-controls="rooms">☰</button>
+      <div class="heading"><p class="eyebrow">群聊 <span id="connection" role="status">连接中</span></p><h1 id="title">正在同步…</h1></div>
+      <button id="models-open" class="text-button" aria-controls="models">成员</button>
+    </header>
+    <div id="network" role="status" hidden></div>
+    <div id="log" role="log" aria-live="polite" aria-label="群聊消息"><div id="messages"></div></div>
+    <button id="new-messages" hidden>有新消息 ↓</button>
+    <form id="composer">
+      <div class="compose-top"><label for="route">发给</label><select id="route" aria-label="消息接收者"></select><span id="mode-label">普通模式</span></div>
+      <div id="attachments" hidden></div>
+      <div class="input-row">
+        <button id="attach" type="button" class="icon-button" aria-label="添加图片">＋</button>
+        <input id="files" type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple hidden>
+        <textarea id="message" rows="1" placeholder="说点什么…" aria-label="消息" maxlength="100000"></textarea>
+        <button id="send" class="primary" type="submit">发送</button>
+      </div>
+      <p id="send-note" role="status" hidden></p>
+    </form>
+  </div>
+  <dialog id="rooms" aria-labelledby="rooms-heading">
+    <div class="sheet-heading"><h2 id="rooms-heading">你的群聊</h2><button data-close="rooms" aria-label="关闭" class="icon-button">×</button></div>
+    <p class="subtle">和 Mac 共用历史、文件和模型。这里切换会话不会切换电脑的页面。</p>
+    <div id="room-list"></div>
+    <div class="sheet-footer"><p>首次使用：Safari 分享 → 添加到主屏幕。<br>Mac 需保持开机，私有连接需开启。<br>草稿仅保留在当前页面；刷新或关闭前请发送。</p><button id="logout" class="text-button">断开本机配对</button></div>
+  </dialog>
+  <dialog id="models" aria-labelledby="models-heading">
+    <div class="sheet-heading"><h2 id="models-heading">一起工作</h2><button data-close="models" aria-label="关闭" class="icon-button">×</button></div>
+    <div id="model-list"></div>
+    <label class="mode-control" for="mode">递送模式<select id="mode"><option value="normal">普通 · 只递送选中者</option><option value="collaboration">协同 · 允许成员互相协作</option></select></label>
+    <p class="subtle">选择「全体」会依次让 GPT、Claude、Gemini 回答。开启协同模式后，成员可以互相 @ 协作。型号和额度与 Mac 共用。</p>
+    <p id="retry-note" class="subtle"></p>
+  </dialog>
+  <div id="toast" role="status" hidden></div>
+</body>
+</html>
