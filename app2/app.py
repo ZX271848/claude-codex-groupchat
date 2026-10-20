@@ -92,8 +92,8 @@ def resolve_path(raw, room):
         if uri.fragment:
             s += "#" + uri.fragment
     if os.name == "nt":
-        s = re.sub(r"^/([a-zA-Z])(?=[:/])", r"\1", s)
-        s = re.sub(r"^([a-zA-Z])/", r"\1:/", s)
+        s = re.sub(r"^/([a-zA-Z]):", r"\1:", s)   # /C:/… from a file URL
+        s = re.sub(r"^/([a-zA-Z])/", r"\1:/", s)  # /c/… as Git Bash writes it; a relative a/b.md stays relative
     s = os.path.expandvars(os.path.expanduser(s))
     tries = [s, re.sub(r"#L?\d+.*$", "", s), re.sub(r"^(.+?):\d+(:\d+)?$", r"\1", s)]
     for t in tries:
